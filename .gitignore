@@ -43,3 +43,16 @@ Thumbs.db
 # Crash reports
 sysinfo.txt
 crashlytics-build.properties
+
+# Project artifacts: agent run logs, POV frames, engine test output
+[Rr]uns/
+[Dd]ebug/
+smoke_test_result.txt
+*.log
+
+# Unity 6 solution file (like *.sln, IDE-generated)
+*.slnx
+
+# Python bytecode
+__pycache__/
+*.pyc
