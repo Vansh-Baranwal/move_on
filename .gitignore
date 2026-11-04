@@ -1,0 +1,45 @@
+# Unity generated folders
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+[Uu]ser[Ss]ettings/
+
+# Memory captures and debug outputs
+[Mm]emoryCaptures/
+/[Aa]ssets/[Aa]ddressable[Aa]ssets[Dd]ata/*/*.bin*
+
+# Asset import and build artifacts
+[Aa]ssets/[Tt]exture[Pp]acker/
+[Aa]ssets/[Ss]treamingAssets/[Aa]ssets/
+[Aa]ssets/[Aa]ddressable[Aa]ssets[Dd]ata/[Aa]ssets/*.bin*
+
+# IDE and generated project files
+.vs/
+.idea/
+*.csproj
+*.sln
+*.suo
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+*.pidb.meta
+
+# OS files
+.DS_Store
+Thumbs.db
+*.tmp
+*.bak
+*.orig
+
+# Crash reports
+sysinfo.txt
+crashlytics-build.properties
