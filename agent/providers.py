@@ -23,7 +23,10 @@ from prompts import SYSTEM_PROMPT, TOOLS
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 GROQ_DEFAULT_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"  # vision models currently absent from Groq
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
-GEMINI_DEFAULT_MODEL = "gemini-3.8-flash"  # 2.5 generation is closed to new users (verified Nov 2026)
+# Verified live Nov 2026: 3.5-flash answers vision+tool requests; the 3.6-3.8
+# generations were returning 503 (overloaded) and 4-argon is rate-gated on the
+# free tier. Override with --model or GEMINI_MODEL when that changes.
+GEMINI_DEFAULT_MODEL = "gemini-3.5-flash"
 CLAUDE_DEFAULT_MODEL = "claude-sonnet-5-5"
 
 PROVIDER_KEYS = {"gemini": "GEMINI_API_KEY", "groq": "GROQ_API_KEY", "claude": "ANTHROPIC_API_KEY"}
@@ -147,7 +150,9 @@ class OpenAICompatProvider:
         except ImportError as error:  # pragma: no cover
             raise SystemExit("pip install openai") from error
         self.model = model
-        self.client = OpenAI(base_url=base_url, api_key=api_key)
+        # Bounded retries with backoff so outages surface as errors instead of
+        # the agent sitting silently for minutes.
+        self.client = OpenAI(base_url=base_url, api_key=api_key, timeout=120.0, max_retries=3)
         self.openai_tools = [
             {
                 "type": "function",

@@ -115,10 +115,12 @@ def run_llm(engine: EngineClient, logger: RunLogger, command: str, provider, max
         tool_name, tool_args, usage = provider.decide(state_line, jpeg)
 
         if tool_name == "none":
+            print(f"  step {logger.step}: (no tool call - nudging)")
             logger.event("none", {}, {"error": "no tool call"}, frame_path=frame_path, usage=usage)
             continue
 
         result, finished, moved = execute_tool(engine, tool_name, tool_args)
+        print(f"  step {logger.step}: {tool_name} {tool_args} -> {json.dumps(result)[:100]}")
         logger.event(tool_name, tool_args, result, frame_path=frame_path, usage=usage)
         provider.report(json.dumps(result))
 
