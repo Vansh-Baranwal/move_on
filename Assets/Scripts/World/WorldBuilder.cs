@@ -34,8 +34,23 @@ namespace RobotEngine.World
             Material dropZoneMaterial = CreateUnlitMaterial("DropZone", new Color(1f, 0f, 0.8f));
             Material borderMaterial = CreateUnlitMaterial("DropZoneBorder", new Color(0.08f, 0.08f, 0.08f));
 
+            Material floorTextured = new Material(floorMaterial);
+            floorTextured.mainTexture = MakeFloorTexture();
+            floorTextured.mainTextureScale = new Vector2(2f, 2f);
+            floorTextured.SetFloat("_Smoothness", 0.22f);
             CreatePrimitive("Floor", PrimitiveType.Cube, new Vector3(0f, -0.05f, 0f),
-                new Vector3(RoomSize, 0.1f, RoomSize), floorMaterial, root);
+                new Vector3(RoomSize, 0.1f, RoomSize), floorTextured, root);
+            Material baseboardMaterial = CreateMaterial("Baseboard", new Color(0.16f, 0.15f, 0.14f));
+            float board = RoomSize / 2f - WallThickness / 2f;
+            CreatePrimitive("BaseboardNorth", PrimitiveType.Cube, new Vector3(0f, 0.05f, board - 0.011f),
+                new Vector3(RoomSize - 0.05f, 0.1f, 0.03f), baseboardMaterial, root);
+            CreatePrimitive("BaseboardSouth", PrimitiveType.Cube, new Vector3(0f, 0.05f, -board + 0.011f),
+                new Vector3(RoomSize - 0.05f, 0.1f, 0.03f), baseboardMaterial, root);
+            CreatePrimitive("BaseboardEast", PrimitiveType.Cube, new Vector3(board - 0.011f, 0.05f, 0f),
+                new Vector3(0.03f, 0.1f, RoomSize - 0.05f), baseboardMaterial, root);
+            CreatePrimitive("BaseboardWest", PrimitiveType.Cube, new Vector3(-board + 0.011f, 0.05f, 0f),
+                new Vector3(0.03f, 0.1f, RoomSize - 0.05f), baseboardMaterial, root);
+            wallMaterial.SetFloat("_Smoothness", 0.08f);
             CreatePrimitive("WallNorth", PrimitiveType.Cube, new Vector3(0f, WallHeight / 2f, RoomSize / 2f),
                 new Vector3(RoomSize, WallHeight, WallThickness), wallMaterial, root);
             CreatePrimitive("WallSouth", PrimitiveType.Cube, new Vector3(0f, WallHeight / 2f, -RoomSize / 2f),
@@ -52,6 +67,7 @@ namespace RobotEngine.World
             for (int i = 0; i < plan.Objects.Length; i++)
             {
                 Material material = CreateMaterial("Colour" + plan.Colours[i], ColourOf(plan.Colours[i]));
+                material.SetFloat("_Smoothness", 0.06f + 0.05f * ((currentSeed + i * 37) % 5));
                 GameObject fetchable = CreateShape("obj_" + (i + 1), plan.Objects[i], plan.Colours[i], material, root);
                 PrepareFetchable(fetchable);
             }
@@ -85,6 +101,15 @@ namespace RobotEngine.World
             light.intensity = 1.1f;
             light.shadows = LightShadows.Soft;
             light.shadowStrength = 0.65f;
+
+            GameObject fillObject = new GameObject("FillLight");
+            fillObject.transform.SetParent(root);
+            fillObject.transform.rotation = Quaternion.Euler(35f, 145f, 0f);
+            Light fill = fillObject.AddComponent<Light>();
+            fill.type = LightType.Directional;
+            fill.intensity = 0.35f;
+            fill.shadows = LightShadows.None;
+            fill.color = new Color(0.85f, 0.9f, 1f);
         }
 
         /// <summary>Tears down the current room and rebuilds it from a seed.</summary>
@@ -275,6 +300,38 @@ namespace RobotEngine.World
             created.AddComponent<MeshRenderer>().sharedMaterial = material;
             created.AddComponent<MeshCollider>().sharedMesh = meshFilter.sharedMesh;
             return created;
+        }
+
+        private static Texture2D MakeFloorTexture()
+        {
+            const int size = 512;
+            Texture2D texture = new Texture2D(size, size, TextureFormat.RGB24, false)
+            {
+                name = "FloorTexture",
+                wrapMode = TextureWrapMode.Repeat
+            };
+            System.Random random = new System.Random(7);
+            Color baseColour = new Color(0.56f, 0.56f, 0.57f);
+            Color seam = new Color(0.34f, 0.34f, 0.35f);
+            for (int y = 0; y < size; y++)
+            {
+                for (int x = 0; x < size; x++)
+                {
+                    float noise = ((float)random.NextDouble() - 0.5f) * 0.05f;
+                    Color colour = baseColour + new Color(noise, noise, noise);
+                    bool seamX = x % 128 < 2 || x % 128 > 125;
+                    bool seamY = y % 128 < 2 || y % 128 > 125;
+                    if (seamX || seamY)
+                    {
+                        colour = seam;
+                    }
+
+                    texture.SetPixel(x, y, colour);
+                }
+            }
+
+            texture.Apply();
+            return texture;
         }
 
         private static Material CreateMaterial(string materialName, Color color)

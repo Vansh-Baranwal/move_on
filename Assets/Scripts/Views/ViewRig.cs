@@ -51,6 +51,11 @@ namespace RobotEngine.Views
             get { return agentCamera != null ? agentCamera.AgentTexture : null; }
         }
 
+        public Camera DisplayCamera
+        {
+            get { return displayCamera; }
+        }
+
         public void Build(Transform robotTransform, AgentCamera agent)
         {
             robot = robotTransform;
@@ -87,6 +92,11 @@ namespace RobotEngine.Views
             mode = mode == ViewMode.FirstPerson ? ViewMode.ThirdPerson : ViewMode.FirstPerson;
         }
 
+        public void SetMode(ViewMode target)
+        {
+            mode = target;
+        }
+
         public void ToggleMinimap()
         {
             MinimapEnabled = !MinimapEnabled;
@@ -110,6 +120,9 @@ namespace RobotEngine.Views
             agentCamera.GetDisplayPose(out fppPosition, out fppRotation);
 
             Vector3 tppPosition = robot.position - robot.forward * 2.2f + Vector3.up * 1.6f;
+            // Keep the chase camera inside the room (never inside a wall).
+            tppPosition.x = Mathf.Clamp(tppPosition.x, -4.55f, 4.55f);
+            tppPosition.z = Mathf.Clamp(tppPosition.z, -4.55f, 4.55f);
             Quaternion tppRotation = Quaternion.LookRotation(
                 (robot.position + robot.forward * 0.6f + Vector3.up * 0.3f) - tppPosition, Vector3.up);
 

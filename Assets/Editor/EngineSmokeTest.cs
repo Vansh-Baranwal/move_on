@@ -146,12 +146,46 @@ namespace RobotEngine.EditorTools
             string replayOff = Post("/replay", "{\"active\":false}");
             Check("replay exits", replayOff.Contains("\"ok\":true"), replayOff);
 
+            // Voice command -> internal brain -> full fetch, then display-view captures.
+            // Curated layout (seed 0) so the fetch is deterministic for verification.
+            Post("/reset", "");
+            string voice = Post("/voice", "{\"text\":\"Bring the blue cube.\",\"auto\":true}");
+            Check("voice command starts brain", voice.Contains("\"ok\":true") && voice.Contains("\"started\":true"), voice);
+            string brainStatus = "";
+            bool brainFinished = false;
+            for (int poll = 0; poll < 150; poll++)
+            {
+                Thread.Sleep(1500);
+                brainStatus = Get("/run/status");
+                if (brainStatus.Contains("\"active\":false"))
+                {
+                    brainFinished = true;
+                    break;
+                }
+            }
+
+            Check("internal brain finished", brainFinished, brainStatus);
+            Check("internal brain passed", brainStatus.Contains("\"outcome\":\"pass\""), brainStatus);
+            string brainLogs = Get("/logs");
+            Check("brain pushed log entries", !brainLogs.Contains("\"count\":0"), brainLogs);
+
+            Get("/view?mode=tpp");
+            Thread.Sleep(1500);
+            byte[] tppView = GetBytes("/view");
+            Check("TPP display capture", tppView.Length > 5000 && tppView[0] == 0xFF && tppView[1] == 0xD8,
+                tppView.Length + " bytes");
+            Get("/view?mode=fpp");
+            Thread.Sleep(1500);
+            byte[] fppView = GetBytes("/view");
+            Check("FPP display capture", fppView.Length > 5000 && fppView[0] == 0xFF && fppView[1] == 0xD8,
+                fppView.Length + " bytes");
+
             Log.AppendLine("SMOKE TEST " + (failures == 0 ? "PASSED" : "FAILED") + " (" + failures + " failures)");
         }
 
         private static void WaitForEngine()
         {
-            for (int attempt = 0; attempt < 60; attempt++)
+            for (int attempt = 0; attempt < 240; attempt++)
             {
                 try
                 {
@@ -190,7 +224,15 @@ namespace RobotEngine.EditorTools
 
             string[] runs = Directory.GetDirectories(runsRoot);
             Array.Sort(runs);
-            return runs.Length > 0 ? runs[runs.Length - 1] : runsRoot;
+            for (int i = runs.Length - 1; i >= 0; i--)
+            {
+                if (!Path.GetFileName(runs[i]).StartsWith("platform"))
+                {
+                    return runs[i];
+                }
+            }
+
+            return runsRoot;
         }
 
         private static float ExtractNumber(string json, string key)

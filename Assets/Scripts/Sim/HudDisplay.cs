@@ -29,6 +29,9 @@ namespace RobotEngine.Sim
         private bool logOpen = true;
         private Vector2 logScroll;
         private int selectedEntry = -1;
+        private string commandInput = "";
+        private string lastVoiceSeen = "";
+        private bool autoRunVoice = true;
 
         public void Build(EngineCore engineCore, RobotEngine.Robot.RobotController robotController,
             ViewRig view, PovRecorder recorder)
@@ -96,6 +99,7 @@ namespace RobotEngine.Sim
             }
 
             DrawStatusBar();
+            DrawCommandBox();
             DrawButtons();
             DrawPip();
             DrawMinimap();
@@ -142,6 +146,49 @@ namespace RobotEngine.Sim
                 viewRig.Mode == ViewMode.FirstPerson ? "FPP" : "TPP");
             GUI.Box(new Rect(8f, 8f, PanelWidth + 60f, 34f), "");
             GUI.Label(new Rect(16f, 14f, PanelWidth + 44f, 22f), status);
+
+            if (engine.BrainActive && engine.Brain != null)
+            {
+                GUI.Label(new Rect(16f, 40f, PanelWidth + 44f, 22f),
+                    string.Format("BRAIN step {0}: {1}   [STOP]", engine.Brain.Step, engine.Brain.LastTool));
+                if (GUI.Button(new Rect(PanelWidth + 30f, 38f, 60f, 22f), "STOP"))
+                {
+                    engine.StopBrain();
+                }
+            }
+        }
+
+        private void DrawCommandBox()
+        {
+            float width = 560f;
+            Rect area = new Rect((Screen.width - width) / 2f, 50f, width, 46f);
+            GUI.Box(area, "");
+
+            // Voice text from the speech sidecar lands in the box automatically.
+            if (!string.IsNullOrEmpty(engine.VoiceText) && engine.VoiceText != lastVoiceSeen)
+            {
+                lastVoiceSeen = engine.VoiceText;
+                commandInput = engine.VoiceText;
+            }
+
+            commandInput = GUI.TextField(new Rect(area.x + 8f, area.y + 9f, width - 220f, 28f), commandInput);
+            Event keyed = Event.current;
+            bool pressedEnter = keyed.isKey && keyed.keyCode == KeyCode.Return &&
+                                GUI.GetNameOfFocusedControl() == "command";
+            GUI.SetNextControlName("command");
+
+            if (GUI.Button(new Rect(area.x + width - 206f, area.y + 9f, 60f, 28f), "Run") ||
+                (pressedEnter && commandInput.Length > 0))
+            {
+                if (engine.StartRun(commandInput))
+                {
+                    commandInput = "";
+                }
+            }
+
+            autoRunVoice = GUI.Toggle(new Rect(area.x + width - 140f, area.y + 11f, 132f, 26f),
+                autoRunVoice, "Auto-run voice");
+            engine.AutoRunVoice = autoRunVoice;
         }
 
         private void DrawButtons()
@@ -177,7 +224,7 @@ namespace RobotEngine.Sim
 
             Rect rect = new Rect(Screen.width - 254f, 50f, 246f, 184f);
             GUI.Box(new Rect(rect.x - 4f, rect.y - 4f, rect.width + 8f, rect.height + 26f),
-                "Claude's FPP view (/look)");
+                "Agent view (/look)");
             GUI.DrawTexture(rect, agentTexture, ScaleMode.ScaleToFit);
         }
 

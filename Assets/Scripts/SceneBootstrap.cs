@@ -53,7 +53,7 @@ namespace RobotEngine
             viewRig.Build(robotObject.transform, agentCamera);
 
             EngineCore engine = gameObject.AddComponent<EngineCore>();
-            engine.Build(world, robot, agentCamera, povRecorder);
+            engine.Build(world, robot, agentCamera, povRecorder, viewRig);
 
             GameServer server = gameObject.AddComponent<GameServer>();
             server.Build(engine);

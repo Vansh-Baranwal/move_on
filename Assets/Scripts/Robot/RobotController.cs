@@ -1,6 +1,8 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using UnityEngine;
 using RobotEngine.Sim;
 using RobotEngine.World;
@@ -40,6 +42,7 @@ namespace RobotEngine.Robot
 
         private readonly List<Transform> wheels = new List<Transform>();
         private Transform holdPoint;
+        private GameObject visualsGroup;
         private Transform heldObject;
 
         public Transform HeldObject
@@ -49,29 +52,52 @@ namespace RobotEngine.Robot
 
         public void Build()
         {
+            // All cosmetic meshes live under one group so a custom GLB model can replace them.
+            visualsGroup = new GameObject("ProceduralBody");
+            visualsGroup.transform.SetParent(transform, false);
+            Transform root = visualsGroup.transform;
+
+            Material shellMaterial = CreateMaterial("RobotShellMaterial", new Color(0.13f, 0.15f, 0.19f));
+            shellMaterial.SetFloat("_Smoothness", 0.45f);
+            Material trimMaterial = CreateMaterial("RobotTrimMaterial", new Color(0.55f, 0.58f, 0.62f));
+            trimMaterial.SetFloat("_Smoothness", 0.6f);
+            Material darkMaterial = CreateMaterial("RobotDarkMaterial", new Color(0.05f, 0.05f, 0.06f));
+            Material wheelMaterial = CreateMaterial("RobotWheelMaterial", new Color(0.04f, 0.04f, 0.05f));
+
             GameObject body = GameObject.CreatePrimitive(PrimitiveType.Capsule);
             body.name = "RobotBody";
-            body.transform.SetParent(transform);
+            body.transform.SetParent(root);
             body.transform.localPosition = new Vector3(0f, 0.35f, 0f);
             body.transform.localScale = new Vector3(0.5f, 0.35f, 0.5f);
-            body.GetComponent<Renderer>().sharedMaterial = CreateMaterial("RobotBodyMaterial", new Color(0.12f, 0.14f, 0.18f));
+            body.GetComponent<Renderer>().sharedMaterial = shellMaterial;
 
-            Material wheelMaterial = CreateMaterial("RobotWheelMaterial", new Color(0.03f, 0.03f, 0.04f));
-            CreateWheel("WheelLeft", -0.26f, wheelMaterial);
-            CreateWheel("WheelRight", 0.26f, wheelMaterial);
+            // Low chassis under the shell for a grounded, vehicle-like silhouette.
+            GameObject chassis = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            chassis.name = "Chassis";
+            chassis.transform.SetParent(root);
+            chassis.transform.localPosition = new Vector3(0f, 0.14f, -0.03f);
+            chassis.transform.localScale = new Vector3(0.44f, 0.16f, 0.44f);
+            chassis.GetComponent<Renderer>().sharedMaterial = trimMaterial;
 
-            CapsuleCollider collider = gameObject.AddComponent<CapsuleCollider>();
-            collider.radius = 0.25f;
-            collider.height = 0.7f;
-            collider.center = new Vector3(0f, 0.35f, 0f);
+            GameObject visor = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            visor.name = "Visor";
+            visor.transform.SetParent(root);
+            visor.transform.localPosition = new Vector3(0f, 0.42f, 0.12f);
+            visor.transform.localScale = new Vector3(0.3f, 0.1f, 0.1f);
+            visor.GetComponent<Renderer>().sharedMaterial = darkMaterial;
+
+            CreateWheel("WheelLeft", -0.26f, wheelMaterial, root);
+            CreateWheel("WheelRight", 0.26f, wheelMaterial, root);
+            CreateCaster("CasterFront", new Vector3(0f, 0.1f, 0.24f), root);
+            CreateCaster("CasterRear", new Vector3(0f, 0.1f, -0.24f), root);
 
             // Visible camera mast so the audience can see the robot's eye.
             GameObject cameraMast = GameObject.CreatePrimitive(PrimitiveType.Cube);
             cameraMast.name = "CameraMast";
-            cameraMast.transform.SetParent(transform);
+            cameraMast.transform.SetParent(root);
             cameraMast.transform.localPosition = new Vector3(0f, 0.52f, 0.28f);
             cameraMast.transform.localScale = new Vector3(0.14f, 0.1f, 0.16f);
-            cameraMast.GetComponent<Renderer>().sharedMaterial = CreateMaterial("RobotCameraMaterial", new Color(0.05f, 0.05f, 0.06f));
+            cameraMast.GetComponent<Renderer>().sharedMaterial = darkMaterial;
 
             GameObject lens = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
             lens.name = "CameraLens";
@@ -81,9 +107,71 @@ namespace RobotEngine.Robot
             lens.transform.localScale = new Vector3(0.5f, 0.2f, 0.5f);
             lens.GetComponent<Renderer>().sharedMaterial = CreateMaterial("RobotLensMaterial", new Color(0.15f, 0.35f, 0.6f));
 
+            // Antenna + beacon for character.
+            GameObject antenna = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            antenna.name = "Antenna";
+            antenna.transform.SetParent(root);
+            antenna.transform.localPosition = new Vector3(0f, 0.68f, -0.16f);
+            antenna.transform.localScale = new Vector3(0.15f, 0.22f, 0.15f);
+            antenna.GetComponent<Renderer>().sharedMaterial = trimMaterial;
+            GameObject beacon = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            beacon.name = "Beacon";
+            beacon.transform.SetParent(root);
+            beacon.transform.localPosition = new Vector3(0f, 0.8f, -0.16f);
+            beacon.transform.localScale = new Vector3(0.09f, 0.09f, 0.09f);
+            Material beaconMaterial = CreateMaterial("RobotBeaconMaterial", new Color(0.9f, 0.25f, 0.1f));
+            beaconMaterial.SetFloat("_Smoothness", 0.7f);
+            beacon.GetComponent<Renderer>().sharedMaterial = beaconMaterial;
+
+            CapsuleCollider collider = gameObject.AddComponent<CapsuleCollider>();
+            collider.radius = 0.25f;
+            collider.height = 0.7f;
+            collider.center = new Vector3(0f, 0.35f, 0f);
+
             holdPoint = new GameObject("HoldPoint").transform;
             holdPoint.SetParent(transform);
             holdPoint.localPosition = new Vector3(0f, 0.3f, 0.5f);
+
+            LoadCustomModelIfPresent();
+        }
+
+        /// <summary>If a robot.glb is provided, load it and hide the procedural meshes.</summary>
+        private async void LoadCustomModelIfPresent()
+        {
+            string projectRoot = Directory.GetParent(Application.dataPath).FullName;
+            string[] candidates =
+            {
+                Path.Combine(projectRoot, "Assets", "StreamingAssets", "robot.glb"),
+                Path.Combine(projectRoot, "robot.glb"),
+            };
+            string path = candidates.FirstOrDefault(File.Exists);
+            if (path == null)
+            {
+                return;
+            }
+
+            try
+            {
+                GLTFast.GltfImport importer = new GLTFast.GltfImport();
+                bool loaded = await importer.Load(new Uri(path));
+                if (!loaded)
+                {
+                    Debug.LogWarning("robot.glb failed to load; keeping the procedural robot");
+                    return;
+                }
+
+                await importer.InstantiateMainSceneAsync(transform);
+                if (visualsGroup != null)
+                {
+                    visualsGroup.SetActive(false);
+                }
+
+                Debug.Log("Custom robot model loaded from " + path);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning("robot.glb import error: " + ex.Message + " - keeping the procedural robot");
+            }
         }
 
         /// <summary>Drives forward (positive) or backward (negative) at MoveSpeed.</summary>
@@ -357,16 +445,27 @@ namespace RobotEngine.Robot
             }
         }
 
-        private void CreateWheel(string wheelName, float x, Material material)
+        private void CreateWheel(string wheelName, float x, Material material, Transform parent)
         {
             GameObject wheel = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
             wheel.name = wheelName;
-            wheel.transform.SetParent(transform);
+            wheel.transform.SetParent(parent);
             wheel.transform.localPosition = new Vector3(x, 0.28f, 0f);
             wheel.transform.localRotation = Quaternion.Euler(0f, 0f, 90f);
             wheel.transform.localScale = new Vector3(0.12f, 0.06f, 0.12f);
             wheel.GetComponent<Renderer>().sharedMaterial = material;
             wheels.Add(wheel.transform);
+        }
+
+        private void CreateCaster(string casterName, Vector3 localPosition, Transform parent)
+        {
+            GameObject caster = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            caster.name = casterName;
+            caster.transform.SetParent(parent);
+            caster.transform.localPosition = localPosition;
+            caster.transform.localScale = new Vector3(0.16f, 0.16f, 0.16f);
+            caster.GetComponent<Renderer>().sharedMaterial =
+                CreateMaterial("RobotCasterMaterial", new Color(0.1f, 0.1f, 0.11f));
         }
 
         private static Material CreateMaterial(string materialName, Color color)

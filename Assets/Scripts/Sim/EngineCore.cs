@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
@@ -66,6 +67,29 @@ namespace RobotEngine.Sim
         private bool replayReturnHolding;
 
         private float recordingStartedAt = -1f;
+        private InternalBrain brain;
+        private bool brainActive;
+        private string voiceText = "";
+        private ViewRig viewRig;
+
+        /// <summary>Last voice-command text pushed by the speech sidecar.</summary>
+        public string VoiceText
+        {
+            get { return voiceText; }
+        }
+
+        /// <summary>When true, a voice command auto-starts a run (UI toggle).</summary>
+        public bool AutoRunVoice { get; set; }
+
+        public bool BrainActive
+        {
+            get { return brainActive; }
+        }
+
+        public InternalBrain Brain
+        {
+            get { return brain; }
+        }
 
         public string StateName
         {
@@ -113,14 +137,217 @@ namespace RobotEngine.Sim
         }
 
         public void Build(WorldBuilder worldBuilder, RobotController robotController, AgentCamera camera,
-            PovRecorder recorder)
+            PovRecorder recorder, ViewRig view)
         {
             world = worldBuilder;
             robot = robotController;
             agentCamera = camera;
             povRecorder = recorder;
+            viewRig = view;
             startPose = CoordinateConverter.UnityToApiPosition(robot.transform.position);
             startHeading = CoordinateConverter.UnityYawToApiHeading(robot.transform.eulerAngles.y);
+        }
+
+        /// <summary>UI-only: mirror an agent log line into the live panel and replay store.</summary>
+        public void AddLogEntry(LogEntry entry)
+        {
+            logEntries.Add(entry);
+            if (logEntries.Count > MaxLogEntries)
+            {
+                logEntries.RemoveAt(0);
+            }
+        }
+
+        /// <summary>
+        /// One engine operation for the internal brain, with exactly the semantics of the
+        /// matching HTTP endpoint (state machine, retries, trail, recording).
+        /// </summary>
+        public IEnumerator ExecuteOp(string tool, float value, Action<Dictionary<string, object>> done)
+        {
+            Dictionary<string, object> result = new Dictionary<string, object>();
+            switch (tool)
+            {
+                case "move":
+                {
+                    float distance = Mathf.Clamp(value, -MaxMoveDistance, MaxMoveDistance);
+                    povRecorder.SetMotion(true);
+                    bool carrying = robot.HeldObject != null;
+                    engineState = carrying ? "Carry" : "GoToObject";
+                    yield return StartCoroutine(robot.MoveRoutine(distance, moveResult =>
+                    {
+                        povRecorder.SetMotion(false);
+                        if (moveResult.Collided)
+                        {
+                            retries += 1;
+                            engineState = "Blocked";
+                        }
+                        else
+                        {
+                            engineState = carrying ? "Carry" : "GoToObject";
+                            RecordTrailPoint();
+                        }
+
+                        result["collided"] = moveResult.Collided;
+                        result["moved"] = moveResult.Moved;
+                    }));
+                    break;
+                }
+                case "turn":
+                {
+                    float degrees = Mathf.Clamp(value, -MaxTurnDegrees, MaxTurnDegrees);
+                    povRecorder.SetMotion(true);
+                    yield return StartCoroutine(robot.TurnRoutine(degrees, turned =>
+                    {
+                        povRecorder.SetMotion(false);
+                        RecordTrailPoint();
+                        result["turned"] = turned;
+                    }));
+                    break;
+                }
+                case "pickup":
+                {
+                    bool success = robot.TryPickup();
+                    if (success)
+                    {
+                        engineState = "PickUp";
+                    }
+
+                    result["success"] = success;
+                    break;
+                }
+                case "drop":
+                {
+                    if (robot.HeldObject == null)
+                    {
+                        result["in_zone"] = false;
+                        result["error"] = "nothing_held";
+                        break;
+                    }
+
+                    povRecorder.SetMotion(true);
+                    engineState = "Drop";
+                    yield return StartCoroutine(robot.DropRoutine(inZone =>
+                    {
+                        povRecorder.SetMotion(false);
+                        engineState = inZone ? "Done" : "Idle";
+                        RecordTrailPoint();
+                        result["in_zone"] = inZone;
+                    }));
+                    break;
+                }
+                case "depth":
+                {
+                    float? depth = agentCamera.CaptureDepth();
+                    result["depth"] = depth ?? float.NaN;
+                    break;
+                }
+            }
+
+            done(result);
+        }
+
+        /// <summary>Starts an internal-brain run from a plain-language command (UI or voice).</summary>
+        public bool StartRun(string command)
+        {
+            if (busy || brainActive || string.IsNullOrWhiteSpace(command))
+            {
+                return false;
+            }
+
+            string stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
+            string directory = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "runs", "platform_" + stamp));
+            povRecorder.StartSession(Path.Combine(directory, "pov"));
+            recordingStartedAt = Time.time;
+            activeCommand = command;
+            engineState = "Idle";
+            ResetWorld();
+            brainActive = true;
+
+            brain = gameObject.AddComponent<InternalBrain>();
+            StartCoroutine(brain.Run(command, directory, this, agentCamera, robot, outcome =>
+            {
+                brainActive = false;
+                int frames = povRecorder.StopSession();
+                recordingStartedAt = -1f;
+                float seconds = frames / 20f;
+                string metaPath = Path.Combine(directory, "pov_meta.json");
+                File.WriteAllText(metaPath, ApiJson.Obj(
+                    ApiJson.Str("command", activeCommand),
+                    ApiJson.Str("outcome", outcome),
+                    ApiJson.Int("frames", frames),
+                    ApiJson.Num("seconds", seconds),
+                    ApiJson.Bool("too_long", seconds > 20f)) + "\n");
+                AddLogEntry(new LogEntry
+                {
+                    Step = brain != null ? brain.Step : 0,
+                    State = outcome,
+                    Tool = "run_summary",
+                    Args = "{}",
+                    Result = "{\"outcome\":\"" + outcome + "\"}",
+                    Collided = false,
+                    Note = "internal brain finished",
+                    Retries = retries,
+                    Outcome = outcome,
+                    X = 0f,
+                    Y = 0f,
+                    Heading = 0f,
+                    Holding = false,
+                    Timestamp = DateTime.UtcNow.ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture),
+                });
+            }));
+
+            return true;
+        }
+
+        public void StopBrain()
+        {
+            if (brain != null && brainActive)
+            {
+                brain.Cancel();
+            }
+        }
+
+        /// <summary>Receives a voice command from the speech sidecar (UI-only text).</summary>
+        public bool PushVoice(string text, bool autoRun)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return false;
+            }
+
+            voiceText = text;
+            return autoRun && StartRun(text);
+        }
+
+        /// <summary>Captures the audience display camera as JPEG (UI-only, verification).</summary>
+        public byte[] CaptureDisplayView()
+        {
+            if (viewRig == null)
+            {
+                return null;
+            }
+
+            Camera display = viewRig != null ? viewRig.DisplayCamera : null;
+            if (display == null)
+            {
+                return null;
+            }
+
+            RenderTexture temp = new RenderTexture(1280, 720, 24, RenderTextureFormat.ARGB32);
+            RenderTexture previous = display.targetTexture;
+            display.targetTexture = temp;
+            display.Render();
+            display.targetTexture = previous;
+            RenderTexture.active = temp;
+            Texture2D frame = new Texture2D(1280, 720, TextureFormat.RGB24, false);
+            frame.ReadPixels(new Rect(0f, 0f, 1280f, 720f), 0, 0);
+            frame.Apply();
+            byte[] jpeg = frame.EncodeToJPG(85);
+            RenderTexture.active = previous;
+            Destroy(frame);
+            temp.Release();
+            Destroy(temp);
+            return jpeg;
         }
 
         public void Enqueue(ApiRequest request)
@@ -186,6 +413,21 @@ namespace RobotEngine.Sim
                 case "/record/stop":
                     HandleRecordStop(request);
                     break;
+                case "/run":
+                    HandleRun(request);
+                    break;
+                case "/run/status":
+                    if (request.Method == "GET") { HandleRunStatus(request); } else { MethodNotAllowed(request); }
+                    break;
+                case "/run/stop":
+                    HandleRunStop(request);
+                    break;
+                case "/voice":
+                    HandleVoice(request);
+                    break;
+                case "/view":
+                    if (request.Method == "GET") { HandleView(request); } else { MethodNotAllowed(request); }
+                    break;
                 default:
                     RespondJson(request, 404, ApiJson.Obj(ApiJson.Str("error", "unknown endpoint: " + request.Path)));
                     break;
@@ -227,6 +469,7 @@ namespace RobotEngine.Sim
         {
             if (request.Method == "GET") { MethodNotAllowed(request); return; }
             if (busy) { RespondBusy(request); return; }
+            if (brainActive) { RespondBrain(request); return; }
             if (replayActive) { RespondReplay(request); return; }
 
             MoveBody body;
@@ -267,6 +510,7 @@ namespace RobotEngine.Sim
         {
             if (request.Method == "GET") { MethodNotAllowed(request); return; }
             if (busy) { RespondBusy(request); return; }
+            if (brainActive) { RespondBrain(request); return; }
             if (replayActive) { RespondReplay(request); return; }
 
             TurnBody body;
@@ -294,6 +538,7 @@ namespace RobotEngine.Sim
         {
             if (request.Method == "GET") { MethodNotAllowed(request); return; }
             if (busy) { RespondBusy(request); return; }
+            if (brainActive) { RespondBrain(request); return; }
             if (replayActive) { RespondReplay(request); return; }
 
             // Success/failure only; the engine never names the object.
@@ -310,6 +555,7 @@ namespace RobotEngine.Sim
         {
             if (request.Method == "GET") { MethodNotAllowed(request); return; }
             if (busy) { RespondBusy(request); return; }
+            if (brainActive) { RespondBrain(request); return; }
             if (replayActive) { RespondReplay(request); return; }
 
             if (robot.HeldObject == null)
@@ -338,6 +584,7 @@ namespace RobotEngine.Sim
         {
             if (request.Method == "GET") { MethodNotAllowed(request); return; }
             if (busy) { RespondBusy(request); return; }
+            if (brainActive) { RespondBrain(request); return; }
 
             ResetBody body;
             if (!TryParseBody(request, out body))
@@ -346,11 +593,8 @@ namespace RobotEngine.Sim
             }
 
             replayActive = false;
-            if (body.seed > 0)
-            {
-                // Seeded randomizable layouts: rebuild the room deterministically.
-                world.Rebuild(body.seed);
-            }
+            // Always rebuild: seed 0 restores the curated layout after a seeded run.
+            world.Rebuild(Mathf.Max(body.seed, 0));
 
             ResetWorld();
             RespondJson(request, 200, ApiJson.Obj(
@@ -614,6 +858,117 @@ namespace RobotEngine.Sim
         {
             public string command;
             public string frames_dir;
+        }
+
+        private void HandleRun(ApiRequest request)
+        {
+            if (request.Method == "GET") { MethodNotAllowed(request); return; }
+
+            RunBody body;
+            if (!TryParseBody(request, out body))
+            {
+                return;
+            }
+
+            bool started = StartRun(body.command);
+            RespondJson(request, started ? 200 : 409, ApiJson.Obj(
+                ApiJson.Bool("ok", started),
+                ApiJson.Str("error", started ? "" : "engine busy or empty command")));
+        }
+
+        private void HandleRunStatus(ApiRequest request)
+        {
+            RespondJson(request, 200, ApiJson.Obj(
+                ApiJson.Bool("active", brainActive),
+                ApiJson.Int("step", brain != null ? brain.Step : 0),
+                ApiJson.Str("tool", brain != null ? brain.LastTool : ""),
+                ApiJson.Str("outcome", brain != null ? brain.Outcome : ""),
+                ApiJson.Str("voice", voiceText),
+                ApiJson.Bool("auto_run_voice", AutoRunVoice)));
+        }
+
+        private void HandleRunStop(ApiRequest request)
+        {
+            if (request.Method == "GET") { MethodNotAllowed(request); return; }
+            StopBrain();
+            RespondJson(request, 200, ApiJson.Obj(ApiJson.Bool("ok", true)));
+        }
+
+        private void HandleVoice(ApiRequest request)
+        {
+            if (request.Method == "GET") { MethodNotAllowed(request); return; }
+
+            VoiceBody body;
+            if (!TryParseBody(request, out body))
+            {
+                return;
+            }
+
+            bool started = PushVoice(body.text, body.auto);
+            RespondJson(request, 200, ApiJson.Obj(
+                ApiJson.Bool("ok", true),
+                ApiJson.Bool("started", started),
+                ApiJson.Str("text", voiceText)));
+        }
+
+        private void HandleView(ApiRequest request)
+        {
+            string query = request.Query ?? "";
+            bool modeRequested = false;
+            if (query.Contains("mode=tpp"))
+            {
+                if (viewRig != null)
+                {
+                    viewRig.SetMode(ViewMode.ThirdPerson);
+                }
+                modeRequested = true;
+            }
+            else if (query.Contains("mode=fpp"))
+            {
+                if (viewRig != null)
+                {
+                    viewRig.SetMode(ViewMode.FirstPerson);
+                }
+                modeRequested = true;
+            }
+
+            if (modeRequested)
+            {
+                // The display camera blends to the new pose over ~0.6s; let the caller
+                // capture later with a plain GET /view.
+                RespondJson(request, 200, ApiJson.Obj(ApiJson.Bool("ok", true)));
+                return;
+            }
+
+            byte[] jpeg = CaptureDisplayView();
+            if (jpeg == null)
+            {
+                RespondJson(request, 500, ApiJson.Obj(ApiJson.Str("error", "no display camera")));
+                return;
+            }
+
+            request.ResponseStatus = 200;
+            request.ResponseContentType = "image/jpeg";
+            request.ResponseData = jpeg;
+            request.Done.Set();
+        }
+
+        private void RespondBrain(ApiRequest request)
+        {
+            RespondJson(request, 409, ApiJson.Obj(ApiJson.Str("error", "internal brain is running")));
+        }
+
+        [Serializable]
+        private sealed class RunBody
+        {
+            public string command;
+        }
+
+        [Serializable]
+        private sealed class VoiceBody
+        {
+            public string text;
+            public bool auto;
         }
 
         [Serializable]

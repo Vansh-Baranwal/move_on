@@ -33,6 +33,20 @@ namespace RobotEngine.Views
             rotation = agentCamera.transform.rotation;
         }
 
+        /// <summary>CPU pixel readback of the current /look frame (for the internal brain).</summary>
+        public Color32[] GetFramePixels()
+        {
+            RenderTexture previousTarget = RenderTexture.active;
+            RenderTexture.active = renderTexture;
+            Texture2D frame = new Texture2D(Width, Height, TextureFormat.RGBA32, false);
+            frame.ReadPixels(new Rect(0f, 0f, Width, Height), 0, 0);
+            frame.Apply();
+            Color32[] pixels = frame.GetPixels32();
+            RenderTexture.active = previousTarget;
+            Destroy(frame);
+            return pixels;
+        }
+
         public void Build(Transform robot)
         {
             robotRoot = robot;

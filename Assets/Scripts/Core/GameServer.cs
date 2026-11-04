@@ -89,6 +89,7 @@ namespace RobotEngine.Core
             {
                 Method = context.Request.HttpMethod,
                 Path = path,
+                Query = context.Request.Url.Query,
                 Body = ReadBody(context.Request),
                 Done = new ManualResetEventSlim(false)
             };
@@ -139,6 +140,7 @@ namespace RobotEngine.Core
     {
         public string Method;
         public string Path;
+        public string Query;
         public string Body;
         public ManualResetEventSlim Done;
         public int ResponseStatus = 200;
