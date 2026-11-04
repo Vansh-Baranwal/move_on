@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Membrane robot agent: Claude tool-use loop over the Unity engine HTTP API.
+"""Membrane robot agent: LLM tool-use loop over the Unity engine HTTP API.
 
-Usage:
+Runs on Groq by default (OpenAI-compatible); switch back to Claude with
+--provider claude. Usage:
+
     python agent/main.py --command "Bring the round red thing."
+    python agent/main.py --provider claude --command "Bring the round red thing."
     python agent/main.py --dummy            # exercises every endpoint, no API cost
 
 Per run it writes logs/<run_id>/log.jsonl with one line per step (step, timestamp,
@@ -12,30 +15,16 @@ tool, args, result, frame_path) and saves each camera frame as a PNG beside the 
 from __future__ import annotations
 
 import argparse
-import base64
-import io
 import json
 import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-import requests
-
 sys.path.insert(0, str(Path(__file__).parent))
 
 from engine_client import EngineClient, EngineError  # noqa: E402
-from prompts import SYSTEM_PROMPT, TOOLS  # noqa: E402
-
-try:
-    import anthropic
-except ImportError:  # pragma: no cover - only needed for live runs
-    anthropic = None
-
-try:
-    from PIL import Image
-except ImportError:  # pragma: no cover
-    Image = None
+from providers import check_api_key, create_provider, default_model  # noqa: E402
 
 MAX_STEPS_HARD = 60
 RUN_OUTCOMES = ("pass", "fail_wrong_object", "fail_not_reached", "fail_collision")
@@ -53,8 +42,8 @@ class RunLogger:
         self.step = 0
 
     def save_frame(self, jpeg_bytes: bytes) -> str:
-        if Image is None:
-            raise SystemExit("Pillow is required: pip install -r requirements.txt")
+        from PIL import Image
+        import io
         self.step += 1
         path = self.frames_dir / f"step_{self.step:04d}.png"
         Image.open(io.BytesIO(jpeg_bytes)).save(path)  # frames saved as PNG beside the log
@@ -78,11 +67,10 @@ class RunLogger:
         self.write(record)
 
 
-def run_claude(engine: EngineClient, logger: RunLogger, command: str, model: str, max_steps: int):
-    client = anthropic.Anthropic()
-    messages: list[dict] = []
+def run_llm(engine: EngineClient, logger: RunLogger, command: str, provider, max_steps: int):
+    """Shared tool-use loop: observation -> one tool call -> execute -> report."""
     outcome, reason = "fail_not_reached", "step budget exhausted"
-    totals = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
+    totals = provider.totals
     attach_image = True  # first decision always carries a frame
 
     for _ in range(max_steps):
@@ -100,58 +88,20 @@ def run_claude(engine: EngineClient, logger: RunLogger, command: str, model: str
         if attach_image:
             jpeg = engine.look()
             frame_path = logger.save_frame(jpeg)
-            content = [
-                {
-                    "type": "image",
-                    "source": {"type": "base64", "media_type": "image/jpeg", "data": base64.b64encode(jpeg).decode()},
-                },
-                {"type": "text", "text": state_line},
-            ]
         else:
+            jpeg = None
             frame_path = None
-            content = [{"type": "text", "text": state_line + " (no new image this step; move or turn to refresh the view)"}]
+            state_line += " (no new image this step; move or turn to refresh the view)"
 
-        messages.append({"role": "user", "content": content})
-        response = client.messages.create(
-            model=model,
-            max_tokens=1024,
-            system=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
-            tools=TOOLS,
-            messages=prune_old_images(messages),
-        )
+        tool_name, tool_args, usage = provider.decide(state_line, jpeg)
 
-        usage = response.usage
-        step_usage = {
-            "input": getattr(usage, "input_tokens", 0),
-            "output": getattr(usage, "output_tokens", 0),
-            "cache_read": getattr(usage, "cache_read_input_tokens", 0) or 0,
-            "cache_write": getattr(usage, "cache_creation_input_tokens", 0) or 0,
-        }
-        for key in totals:
-            totals[key] += step_usage[key]
-
-        tool_uses = [block for block in response.content if block.type == "tool_use"]
-        messages.append({"role": "assistant", "content": response.content})
-
-        if not tool_uses:
-            text = " ".join(
-                getattr(block, "text", "") for block in response.content if block.type == "text"
-            ).strip()
-            logger.event("none", {}, {"error": "no tool call", "said": text[:200]})
-            messages.append({"role": "user", "content": [{"type": "text", "text": "Reply with exactly one tool call."}]})
+        if tool_name == "none":
+            logger.event("none", {}, {"error": "no tool call"}, frame_path=frame_path, usage=usage)
             continue
 
-        call = tool_uses[0]
-        result, finished, moved = execute_tool(engine, call)
-        logger.event(call.name, dict(call.input or {}), result, frame_path=frame_path, usage=step_usage)
-        messages.append({
-            "role": "user",
-            "content": [{
-                "type": "tool_result",
-                "tool_use_id": call.id,
-                "content": [{"type": "text", "text": json.dumps(result)}],
-            }],
-        })
+        result, finished, moved = execute_tool(engine, tool_name, tool_args)
+        logger.event(tool_name, tool_args, result, frame_path=frame_path, usage=usage)
+        provider.report(json.dumps(result))
 
         if finished:
             outcome = result.get("outcome", "fail_not_reached")
@@ -160,13 +110,12 @@ def run_claude(engine: EngineClient, logger: RunLogger, command: str, model: str
         # Fresh image next step only after an actual movement, per the spec's control loop.
         attach_image = moved
 
+    totals = provider.totals
     return outcome, reason, totals
 
 
-def execute_tool(engine: EngineClient, call):
+def execute_tool(engine: EngineClient, name: str, args: dict):
     """Returns (result_dict, finished, moved)."""
-    name = call.name
-    args = call.input or {}
     try:
         if name == "move":
             return engine.move(float(args["distance"])), False, True
@@ -184,32 +133,8 @@ def execute_tool(engine: EngineClient, call):
                 outcome = "fail_not_reached"
             return {"outcome": outcome, "reason": args.get("reason", "")}, True, False
         return {"error": f"unknown tool: {name}"}, False, False
-    except (EngineError, KeyError, ValueError) as error:
+    except (EngineError, KeyError, TypeError, ValueError) as error:
         return {"error": str(error)}, False, False
-
-
-def prune_old_images(messages: list[dict]) -> list[dict]:
-    """Keep only the latest camera image in the request; earlier ones become one-line notes."""
-    last_image = -1
-    for index, message in enumerate(messages):
-        if message["role"] == "user" and any(
-            isinstance(block, dict) and block.get("type") == "image" for block in message["content"]
-        ):
-            last_image = index
-
-    pruned = []
-    for index, message in enumerate(messages):
-        if index == last_image or message["role"] != "user":
-            pruned.append(message)
-            continue
-        content = [
-            {"type": "text", "text": "[camera frame from an earlier step omitted]"}
-            if isinstance(block, dict) and block.get("type") == "image"
-            else block
-            for block in message["content"]
-        ]
-        pruned.append({**message, "content": content})
-    return pruned
 
 
 def run_dummy(engine: EngineClient, logger: RunLogger):
@@ -245,7 +170,9 @@ def run_dummy(engine: EngineClient, logger: RunLogger):
 def main() -> int:
     parser = argparse.ArgumentParser(description="Membrane robot fetch agent")
     parser.add_argument("--command", help='Plain-language command, e.g. "Bring the round red thing."')
-    parser.add_argument("--model", default=os.environ.get("MEMBRANE_MODEL", "claude-sonnet-5-5"))
+    parser.add_argument("--provider", choices=("groq", "claude"), default="groq",
+                        help="LLM backend (default groq; claude kept for the later switch-back)")
+    parser.add_argument("--model", default=None, help="Override the provider's default model")
     parser.add_argument("--max-steps", type=int, default=25, help="Soft target 25; hard stop 60.")
     parser.add_argument("--base-url", default="http://localhost:8080")
     parser.add_argument("--dummy", action="store_true", help="Scripted plumbing test, no API calls.")
@@ -256,6 +183,7 @@ def main() -> int:
     if not args.dummy and not args.command:
         parser.error("--command is required unless --dummy is used")
     max_steps = min(max(1, args.max_steps), MAX_STEPS_HARD)
+    model = args.model or default_model(args.provider)
 
     engine = EngineClient(args.base_url)
     engine.wait_ready()
@@ -264,6 +192,7 @@ def main() -> int:
     run_dir.mkdir(parents=True, exist_ok=True)
     logger = RunLogger(run_dir)
     print(f"Run directory: {run_dir}")
+    print(f"Provider: {args.provider}  model: {model}")
 
     command = args.command or "(dummy run)"
     engine.reset()
@@ -275,7 +204,9 @@ def main() -> int:
         if args.dummy:
             outcome, reason, totals = run_dummy(engine, logger)
         else:
-            outcome, reason, totals = run_claude(engine, logger, command, args.model, max_steps)
+            check_api_key(args.provider)
+            provider = create_provider(args.provider, model)
+            outcome, reason, totals = run_llm(engine, logger, command, provider, max_steps)
     finally:
         if not args.no_record:
             try:
@@ -289,7 +220,8 @@ def main() -> int:
         "outcome": outcome,
         "reason": reason,
         "steps": steps,
-        "model": None if args.dummy else args.model,
+        "provider": args.provider,
+        "model": None if args.dummy else model,
         "finished_utc": datetime.now(timezone.utc).isoformat(),
     }, indent=2) + "\n", encoding="utf-8")
 
