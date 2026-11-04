@@ -4,7 +4,10 @@ Both providers speak the same protocol: the agent feeds each step's observation
 (state line + optional JPEG frame) and gets back exactly one tool call, then
 reports the tool result. Switching engines is a --provider flag, nothing else.
 
-- GroqProvider (default): OpenAI-compatible endpoint, vision via data-URL images.
+- GeminiProvider (default): Google's OpenAI-compatible endpoint, vision + tools,
+  generous free tier. Chosen because Groq currently serves no vision models.
+- GroqProvider: same OpenAI-compatible shape, kept ready for when Groq ships a
+  vision model again (its catalog is text-only right now).
 - ClaudeProvider: Anthropic Messages API with prompt caching, kept for when the
   team shifts back to Sonnet.
 """
@@ -18,8 +21,12 @@ import os
 from prompts import SYSTEM_PROMPT, TOOLS
 
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-GROQ_DEFAULT_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+GROQ_DEFAULT_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"  # vision models currently absent from Groq
+GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+GEMINI_DEFAULT_MODEL = "gemini-2.5-flash"
 CLAUDE_DEFAULT_MODEL = "claude-sonnet-5-5"
+
+PROVIDER_KEYS = {"gemini": "GEMINI_API_KEY", "groq": "GROQ_API_KEY", "claude": "ANTHROPIC_API_KEY"}
 
 # The system prompt carries no object data (see prompts.py leakage audit); it is
 # static per run, so providers may cache it freely.
@@ -27,26 +34,39 @@ SYSTEM_TEXT = SYSTEM_PROMPT
 
 
 def create_provider(provider: str, model: str | None):
+    if provider == "gemini":
+        return OpenAICompatProvider(
+            GEMINI_BASE_URL,
+            os.environ[PROVIDER_KEYS["gemini"]],
+            model or default_model("gemini"),
+        )
     if provider == "groq":
-        return GroqProvider(model)
+        return OpenAICompatProvider(
+            GROQ_BASE_URL,
+            os.environ[PROVIDER_KEYS["groq"]],
+            model or default_model("groq"),
+        )
     if provider == "claude":
         return ClaudeProvider(model)
     raise ValueError(f"unknown provider: {provider}")
 
 
 def default_model(provider: str) -> str:
+    if provider == "gemini":
+        return os.environ.get("GEMINI_MODEL", GEMINI_DEFAULT_MODEL)
     if provider == "groq":
         return os.environ.get("GROQ_MODEL", GROQ_DEFAULT_MODEL)
     return os.environ.get("ANTHROPIC_MODEL", CLAUDE_DEFAULT_MODEL)
 
 
 def check_api_key(provider: str) -> None:
-    needed = "GROQ_API_KEY" if provider == "groq" else "ANTHROPIC_API_KEY"
+    needed = PROVIDER_KEYS[provider]
     if not os.environ.get(needed):
         raise SystemExit(
             f"{needed} is not set. Export it in this terminal first, e.g.:\n"
-            f"  Git Bash: export {needed}=\"...\"\n"
-            f"  CMD:      set {needed}=..."
+            f"  PowerShell: $env:{needed}=\"...\"\n"
+            f"  Git Bash:   export {needed}=\"...\"\n"
+            f"  Permanent:  setx {needed} \"...\"  (then reopen the terminal)"
         )
 
 
@@ -118,16 +138,16 @@ class ClaudeProvider:
         return self_.totals
 
 
-class GroqProvider:
-    """OpenAI-compatible chat completions against Groq; vision via data-URL images."""
+class OpenAICompatProvider:
+    """OpenAI-compatible chat completions (Gemini, Groq, ...); vision via data-URL images."""
 
-    def __init__(self, model: str | None):
+    def __init__(self, base_url: str, api_key: str, model: str):
         try:
             from openai import OpenAI
         except ImportError as error:  # pragma: no cover
             raise SystemExit("pip install openai") from error
-        self.model = model or default_model("groq")
-        self.client = OpenAI(base_url=GROQ_BASE_URL, api_key=os.environ["GROQ_API_KEY"])
+        self.model = model
+        self.client = OpenAI(base_url=base_url, api_key=api_key)
         self.openai_tools = [
             {
                 "type": "function",

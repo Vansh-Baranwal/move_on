@@ -5,8 +5,9 @@ Robot Hackathon track: type a plain-language command, the model finds the object
 from camera pixels alone, drives the wheeled robot to it, picks it up, carries it
 to the drop zone and releases it.
 
-**LLM backend: Groq (Llama 4 Scout) by default for now; Claude/Sonnet is kept
-behind `--provider claude` for the switch back — see "LLM provider" below.**
+**LLM backend: Gemini (free tier) by default for now; Groq currently serves no
+vision models (catalog verified Nov 2026). Claude/Sonnet stays behind
+`--provider claude` for the switch back — see "LLM provider" below.**
 
 ## Quick start
 
@@ -23,8 +24,8 @@ pip install -r requirements.txt
 # 3. Plumbing test — zero API cost, touches every endpoint:
 python agent/main.py --dummy
 
-# 4. Real run (needs GROQ_API_KEY in the environment):
-export GROQ_API_KEY="gsk_..."
+# 4. Real run (needs GEMINI_API_KEY in the environment):
+export GEMINI_API_KEY="..."
 python agent/main.py --command "Bring the round red thing."
 
 # 5. Phase 2 clip from the recorded POV frames (MP4 720p, 10–20 s, command overlay):
@@ -35,12 +36,13 @@ python tools/make_clip.py logs/<run_dir>
 
 | Provider | Command | API key env var | Default model |
 |---|---|---|---|
-| Groq (default) | `--provider groq` | `GROQ_API_KEY` | `meta-llama/llama-4-scout-17b-16e-instruct` |
+| Gemini (default) | `--provider gemini` | `GEMINI_API_KEY` | `gemini-2.5-flash` |
+| Groq | `--provider groq` | `GROQ_API_KEY` | `meta-llama/llama-4-scout-17b-16e-instruct` (no vision models on Groq right now) |
 | Claude | `--provider claude` | `ANTHROPIC_API_KEY` | `claude-sonnet-5-5` |
 
-- Override the model with `--model` or `GROQ_MODEL` / `ANTHROPIC_MODEL`.
-  Available Groq models: `curl https://api.groq.com/openai/v1/models -H "Authorization: Bearer $GROQ_API_KEY"`
-  — pick a **vision + tool-calling** model.
+- Override the model with `--model` or `GEMINI_MODEL` / `GROQ_MODEL` / `ANTHROPIC_MODEL`.
+- Gemini + Groq speak the OpenAI-compatible protocol; the provider class is
+  shared, so any OpenAI-shaped endpoint can be added in three lines.
 - Both providers share the same loop, prompt, tools and logging; the switch is
   one flag. The agent sends the newest camera image each decision and keeps the
   history text-only (one line per earlier step) on either backend.
