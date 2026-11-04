@@ -30,6 +30,7 @@ namespace RobotEngine.Robot
         public const float ReachDistance = 0.5f;
         public const float ReachAngle = 30f;
         public const float BackoffDistance = 0.1f;
+    private const float FixedStep = 1f / 60f;
 
         // Slightly smaller than the visual capsule so horizontal casts never graze the floor plane.
         private const float CastRadius = 0.24f;
@@ -64,6 +65,22 @@ namespace RobotEngine.Robot
             collider.height = 0.7f;
             collider.center = new Vector3(0f, 0.35f, 0f);
 
+            // Visible camera mast so the audience can see the robot's eye.
+            GameObject cameraMast = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            cameraMast.name = "CameraMast";
+            cameraMast.transform.SetParent(transform);
+            cameraMast.transform.localPosition = new Vector3(0f, 0.52f, 0.28f);
+            cameraMast.transform.localScale = new Vector3(0.14f, 0.1f, 0.16f);
+            cameraMast.GetComponent<Renderer>().sharedMaterial = CreateMaterial("RobotCameraMaterial", new Color(0.05f, 0.05f, 0.06f));
+
+            GameObject lens = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            lens.name = "CameraLens";
+            lens.transform.SetParent(cameraMast.transform);
+            lens.transform.localPosition = new Vector3(0f, 0f, 0.09f);
+            lens.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
+            lens.transform.localScale = new Vector3(0.5f, 0.2f, 0.5f);
+            lens.GetComponent<Renderer>().sharedMaterial = CreateMaterial("RobotLensMaterial", new Color(0.15f, 0.35f, 0.6f));
+
             holdPoint = new GameObject("HoldPoint").transform;
             holdPoint.SetParent(transform);
             holdPoint.localPosition = new Vector3(0f, 0.3f, 0.5f);
@@ -76,25 +93,35 @@ namespace RobotEngine.Robot
             float direction = Mathf.Sign(signedDistance);
             bool collided = false;
             float moved = 0f;
+            float accumulator = 0f;
 
+            // Fixed-step integration: the simulation advances only in FixedStep
+            // chunks while this op runs, and never between ops.
             while (remaining > 0.0005f)
             {
-                float step = Mathf.Min(MoveSpeed * Time.deltaTime, remaining);
-                Vector3 travel = transform.forward * direction;
-                float castDistance;
-                if (CastBody(travel, step, out castDistance))
+                accumulator += Time.deltaTime;
+                while (accumulator >= FixedStep && remaining > 0.0005f)
                 {
-                    float advance = Mathf.Max(castDistance - CastSkin, 0f);
-                    transform.position += travel * advance;
-                    moved += advance;
-                    collided = true;
-                    break;
+                    accumulator -= FixedStep;
+                    float step = Mathf.Min(MoveSpeed * FixedStep, remaining);
+                    Vector3 travel = transform.forward * direction;
+                    float castDistance;
+                    if (CastBody(travel, step, out castDistance))
+                    {
+                        float advance = Mathf.Max(castDistance - CastSkin, 0f);
+                        transform.position += travel * advance;
+                        moved += advance;
+                        collided = true;
+                        remaining = 0f;
+                        break;
+                    }
+
+                    transform.position += travel * step;
+                    moved += step;
+                    remaining -= step;
+                    SpinWheels(step);
                 }
 
-                transform.position += travel * step;
-                moved += step;
-                remaining -= step;
-                SpinWheels(step);
                 yield return null;
             }
 
@@ -112,13 +139,20 @@ namespace RobotEngine.Robot
             float remaining = Mathf.Abs(signedDegrees);
             float direction = Mathf.Sign(signedDegrees);
             float turned = 0f;
+            float accumulator = 0f;
 
             while (remaining > 0.01f)
             {
-                float step = Mathf.Min(TurnSpeed * Time.deltaTime, remaining);
-                transform.Rotate(0f, step * direction, 0f, Space.Self);
-                turned += step;
-                remaining -= step;
+                accumulator += Time.deltaTime;
+                while (accumulator >= FixedStep && remaining > 0.01f)
+                {
+                    accumulator -= FixedStep;
+                    float step = Mathf.Min(TurnSpeed * FixedStep, remaining);
+                    transform.Rotate(0f, step * direction, 0f, Space.Self);
+                    turned += step;
+                    remaining -= step;
+                }
+
                 yield return null;
             }
 
@@ -152,9 +186,32 @@ namespace RobotEngine.Robot
             }
 
             target.SetParent(holdPoint);
-            target.localPosition = Vector3.zero;
-            target.localRotation = Quaternion.identity;
+            StartCoroutine(SnapRoutine(target));
             return true;
+        }
+
+        /// <summary>Snap animation: pull the object from its grabbed pose onto the hold point.</summary>
+        private IEnumerator SnapRoutine(Transform target)
+        {
+            Vector3 startPosition = target.localPosition;
+            Quaternion startRotation = target.localRotation;
+            float elapsed = 0f;
+            const float duration = 0.15f;
+
+            while (elapsed < duration && target.parent == holdPoint)
+            {
+                elapsed += Time.deltaTime;
+                float eased = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(elapsed / duration));
+                target.localPosition = Vector3.Lerp(startPosition, Vector3.zero, eased);
+                target.localRotation = Quaternion.Slerp(startRotation, Quaternion.identity, eased);
+                yield return null;
+            }
+
+            if (target.parent == holdPoint)
+            {
+                target.localPosition = Vector3.zero;
+                target.localRotation = Quaternion.identity;
+            }
         }
 
         /// <summary>Releases the held object, lets it settle, then reports zone landing.</summary>

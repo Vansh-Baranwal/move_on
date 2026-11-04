@@ -130,6 +130,22 @@ namespace RobotEngine.EditorTools
             Check("reset restores retries", after.Contains("\"retries\":0"), after);
             Check("reset restores pose", after.Contains("\"x\":-3.4"), after);
 
+            string seeded = Post("/reset", "{\"seed\":42}");
+            Check("seeded reset ok", seeded.Contains("\"seed\":42"), seeded);
+            string seededAgain = Post("/reset", "{\"seed\":42}");
+            Check("seeded reset repeatable", seededAgain.Contains("\"seed\":42"), seededAgain);
+            Post("/reset", "");
+
+            string pushed = Post("/log", "{\"step\":1,\"state\":\"GoToObject\",\"tool\":\"move\",\"args\":\"{\\\"distance\\\":1}\",\"result\":\"{\\\"collided\\\":false}\",\"collided\":false,\"note\":\"SEE: test\",\"retries\":0,\"outcome\":\"\",\"frame_path\":\"\",\"x\":-3.4,\"y\":-3.4,\"heading\":0,\"holding\":false}");
+            Check("log push ok", pushed.Contains("\"ok\":true"), pushed);
+            string logs = Get("/logs");
+            Check("logs stored", logs.Contains("\"count\":1") && logs.Contains("move"), logs);
+
+            string replay = Post("/replay", "{\"active\":true,\"index\":0}");
+            Check("replay scrubs", replay.Contains("\"ok\":true"), replay);
+            string replayOff = Post("/replay", "{\"active\":false}");
+            Check("replay exits", replayOff.Contains("\"ok\":true"), replayOff);
+
             Log.AppendLine("SMOKE TEST " + (failures == 0 ? "PASSED" : "FAILED") + " (" + failures + " failures)");
         }
 

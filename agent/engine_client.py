@@ -62,9 +62,21 @@ class EngineClient:
 
     # -- operational helpers -----------------------------------------------------
 
-    def reset(self) -> dict:
-        """Restore robot pose, object poses and retry count for a new run."""
-        return self._request("POST", "/reset")
+    def push_log(self, entry: dict) -> None:
+        """Mirror a log line into the engine's live UI panel. Best-effort: the
+        panel is UI-only, so a failed push never affects the run."""
+        try:
+            self._request("POST", "/log", entry)
+        except EngineError:
+            pass
+
+    def set_replay(self, active: bool, index: int = 0) -> dict:
+        return self._request("POST", "/replay", {"active": active, "index": index})
+
+    def reset(self, seed: int = 0) -> dict:
+        """Restore robot pose and retry count; seed > 0 rebuilds a deterministic
+        random layout for testing."""
+        return self._request("POST", "/reset", {"seed": seed})
 
     def record_start(self, command: str, frames_dir: str | None = None) -> dict:
         """Begin a POV recording session. frames_dir points the engine at the

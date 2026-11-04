@@ -34,10 +34,17 @@ namespace RobotEngine.Views
         private float nextCapture;
         private string sessionDirectory;
         private int frameCount;
+        private float motionSeconds;
 
         public bool SessionActive
         {
             get { return sessionActive; }
+        }
+
+        /// <summary>Seconds of captured motion - drives the >20 s clip warning.</summary>
+        public float MotionSeconds
+        {
+            get { return motionSeconds; }
         }
 
         public void Build(Transform robot)
@@ -77,6 +84,7 @@ namespace RobotEngine.Views
             sessionDirectory = directory;
             Directory.CreateDirectory(sessionDirectory);
             frameCount = 0;
+            motionSeconds = 0f;
             writeQueue.Clear();
             writerRunning = true;
             writerThread = new Thread(WriterLoop) { IsBackground = true };
@@ -129,6 +137,7 @@ namespace RobotEngine.Views
             }
 
             nextCapture = Time.time + CaptureInterval;
+            motionSeconds += CaptureInterval;
             CaptureFrame();
         }
 

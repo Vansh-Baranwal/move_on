@@ -88,6 +88,30 @@ class RunLogger:
         self.write(record)
 
 
+def push_step(engine: EngineClient, state: dict, tool: str, args: dict, result,
+              frame_path: str | None, note: str | None):
+    """Mirror one step into the engine's live log panel (UI-only, best-effort)."""
+    try:
+        engine.push_log({
+            "step": state.get("step", 0),
+            "state": state.get("state", ""),
+            "tool": tool,
+            "args": json.dumps(args or {}),
+            "result": json.dumps(result),
+            "collided": bool(isinstance(result, dict) and result.get("collided", False)),
+            "note": note or "",
+            "retries": int(state.get("retries", 0)),
+            "outcome": (result or {}).get("outcome", "") if isinstance(result, dict) else "",
+            "frame_path": frame_path or "",
+            "x": float(state.get("x", 0.0)),
+            "y": float(state.get("y", 0.0)),
+            "heading": float(state.get("heading", 0.0)),
+            "holding": bool(state.get("holding", False)),
+        })
+    except Exception:
+        pass
+
+
 def run_llm(engine: EngineClient, logger: RunLogger, command: str, provider, max_steps: int):
     """Shared tool-use loop: observation -> one tool call -> execute -> report."""
     outcome, reason = "fail_not_reached", "step budget exhausted"
@@ -105,6 +129,7 @@ def run_llm(engine: EngineClient, logger: RunLogger, command: str, provider, max
             f"heading={state['heading']:.1f} holding={state['holding']} retries={state['retries']}"
         )
         state_line += " depth=null" if depth is None else f" depth={depth:.2f}m"
+        state["step"] = logger.step + 1
 
         if attach_image:
             jpeg = engine.look()
@@ -118,7 +143,8 @@ def run_llm(engine: EngineClient, logger: RunLogger, command: str, provider, max
 
         if tool_name == "none":
             print(f"  step {logger.step}: (no tool call) SEE: {note[:120]}")
-            logger.event("none", {}, {"error": "no tool call"}, frame_path=frame_path, usage=usage, note=note)
+            logger.event("none", {}, {"error": "no tool call"}, frame_path=frame_path, usage=usage)
+            push_step(engine, state, "none", {}, {"error": "no tool call"}, frame_path, note)
             continue
 
         result, finished, moved = execute_tool(engine, tool_name, tool_args)
@@ -126,6 +152,7 @@ def run_llm(engine: EngineClient, logger: RunLogger, command: str, provider, max
         if note:
             print(f"           SEE: {note[:140]}")
         logger.event(tool_name, tool_args, result, frame_path=frame_path, usage=usage, note=note)
+        push_step(engine, state, tool_name, tool_args, result, frame_path, note)
         provider.report(json.dumps(result))
 
         if finished:
@@ -188,6 +215,9 @@ def run_dummy(engine: EngineClient, logger: RunLogger):
         else:
             result = getattr(engine, name)()
         logger.event(name, args, result, frame_path=frame_path)
+        push_step(engine, {"step": logger.step, "state": "Idle", "retries": 0, "x": 0.0,
+                           "y": 0.0, "heading": 0.0, "holding": False},
+                  name, args, result, frame_path, None)
         print(f"  {name} {args} -> {result}")
     return "fail_not_reached", "dummy run", {}
 
@@ -252,6 +282,9 @@ def main() -> int:
 
     logger.write({"event": "run_summary", "outcome": outcome, "reason": reason, "steps": steps,
                   "usage_totals": totals})
+    push_step(engine, {"step": steps, "state": outcome, "retries": 0, "x": 0, "y": 0,
+                       "heading": 0, "holding": False},
+              "run_summary", {}, {"outcome": outcome, "reason": reason}, None, reason)
     print(f"Outcome: {outcome} ({reason}) after {steps} steps")
     if totals:
         print(f"Tokens: input {totals['input']} (cached read {totals['cache_read']}, "

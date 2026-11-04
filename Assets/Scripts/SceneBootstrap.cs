@@ -33,7 +33,7 @@ namespace RobotEngine
             GameObject worldObject = new GameObject("World");
             worldObject.transform.SetParent(transform);
             WorldBuilder world = worldObject.AddComponent<WorldBuilder>();
-            world.Build();
+            world.Build(0);
 
             GameObject robotObject = new GameObject("Robot");
             robotObject.transform.SetParent(transform);
@@ -49,15 +49,17 @@ namespace RobotEngine
             agentCamera.Build(robotObject.transform);
             PovRecorder povRecorder = cameraRigObject.AddComponent<PovRecorder>();
             povRecorder.Build(robotObject.transform);
+            ViewRig viewRig = cameraRigObject.AddComponent<ViewRig>();
+            viewRig.Build(robotObject.transform, agentCamera);
 
             EngineCore engine = gameObject.AddComponent<EngineCore>();
-            engine.Build(robot, agentCamera, povRecorder);
+            engine.Build(world, robot, agentCamera, povRecorder);
 
             GameServer server = gameObject.AddComponent<GameServer>();
             server.Build(engine);
 
             HudDisplay hud = gameObject.AddComponent<HudDisplay>();
-            hud.Build(engine, robot);
+            hud.Build(engine, robot, viewRig, povRecorder);
         }
 
         private static void RemoveSceneCamerasAndLights()

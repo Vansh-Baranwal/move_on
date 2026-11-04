@@ -56,10 +56,26 @@ namespace RobotEngine.World
             dropZoneHalfSize = size * 0.5f;
         }
 
+        /// <summary>Engine-UI only: minimap draws the zone marker from this.</summary>
+        public static Vector3 DropZoneCenter
+        {
+            get { return dropZoneCenter; }
+        }
+
+        public static float DropZoneHalfSize
+        {
+            get { return dropZoneHalfSize; }
+        }
+
         public static bool IsInsideDropZone(Vector3 position)
         {
             return Mathf.Abs(position.x - dropZoneCenter.x) <= dropZoneHalfSize &&
                 Mathf.Abs(position.z - dropZoneCenter.z) <= dropZoneHalfSize;
+        }
+
+        public static void Clear()
+        {
+            fetchables.Clear();
         }
 
         public static void Reset()

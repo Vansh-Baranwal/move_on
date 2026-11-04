@@ -20,6 +20,19 @@ namespace RobotEngine.Views
         private RenderTexture renderTexture;
         private Transform robotRoot;
 
+        /// <summary>The live /look render texture - used for the TPP picture-in-picture.</summary>
+        public RenderTexture AgentTexture
+        {
+            get { return renderTexture; }
+        }
+
+        /// <summary>Pose the /look camera renders from, for the FPP display mode.</summary>
+        public void GetDisplayPose(out Vector3 position, out Quaternion rotation)
+        {
+            position = agentCamera.transform.position;
+            rotation = agentCamera.transform.rotation;
+        }
+
         public void Build(Transform robot)
         {
             robotRoot = robot;

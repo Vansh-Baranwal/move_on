@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using UnityEngine;
@@ -10,18 +11,43 @@ using RobotEngine.World;
 
 namespace RobotEngine.Sim
 {
+    /// <summary>One agent-pushed log line, mirrored into the live panel and replay.</summary>
+    public sealed class LogEntry
+    {
+        public int Step;
+        public string State = "";
+        public string Tool = "";
+        public string Args = "";
+        public string Result = "";
+        public bool Collided;
+        public string Note = "";
+        public int Retries;
+        public string Outcome = "";
+        public string FramePath = "";
+        public float X;
+        public float Y;
+        public float Heading;
+        public bool Holding;
+        public string Timestamp = "";
+    }
+
     /// <summary>
     /// Central engine coordinator. Executes API requests on the main thread, owns the robot
-    /// state machine and retry counter, and enforces the engine boundary: no object data ever
-    /// reaches a response. The scene advances only while /move, /turn or /drop execute.
+    /// state machine and retry counter, the live log store, the path trail and replay, and
+    /// enforces the engine boundary: no object data ever reaches a response. The simulation
+    /// advances only while /move, /turn or /drop execute.
     /// </summary>
     public sealed class EngineCore : MonoBehaviour
     {
         private const float MaxMoveDistance = 12f;
         private const float MaxTurnDegrees = 720f;
+        private const int MaxLogEntries = 600;
 
         private readonly ConcurrentQueue<ApiRequest> requests = new ConcurrentQueue<ApiRequest>();
+        private readonly List<LogEntry> logEntries = new List<LogEntry>();
+        private readonly List<Vector2> trail = new List<Vector2>();
 
+        private WorldBuilder world;
         private RobotController robot;
         private AgentCamera agentCamera;
         private PovRecorder povRecorder;
@@ -32,6 +58,14 @@ namespace RobotEngine.Sim
         private bool busy;
         private Vector2 startPose;
         private float startHeading;
+
+        private bool replayActive;
+        private int replayIndex;
+        private Vector2 replayReturnPose;
+        private float replayReturnHeading;
+        private bool replayReturnHolding;
+
+        private float recordingStartedAt = -1f;
 
         public string StateName
         {
@@ -53,8 +87,35 @@ namespace RobotEngine.Sim
             get { return povRecorder != null && povRecorder.SessionActive; }
         }
 
-        public void Build(RobotController robotController, AgentCamera camera, PovRecorder recorder)
+        public float RecordingElapsedSeconds
         {
+            get { return recordingStartedAt < 0f ? 0f : Time.time - recordingStartedAt; }
+        }
+
+        public IReadOnlyList<LogEntry> Logs
+        {
+            get { return logEntries; }
+        }
+
+        public IReadOnlyList<Vector2> Trail
+        {
+            get { return trail; }
+        }
+
+        public bool ReplayActive
+        {
+            get { return replayActive; }
+        }
+
+        public int ReplayIndex
+        {
+            get { return replayIndex; }
+        }
+
+        public void Build(WorldBuilder worldBuilder, RobotController robotController, AgentCamera camera,
+            PovRecorder recorder)
+        {
+            world = worldBuilder;
             robot = robotController;
             agentCamera = camera;
             povRecorder = recorder;
@@ -110,6 +171,15 @@ namespace RobotEngine.Sim
                 case "/reset":
                     HandleReset(request);
                     break;
+                case "/log":
+                    HandleLog(request);
+                    break;
+                case "/logs":
+                    if (request.Method == "GET") { HandleLogs(request); } else { MethodNotAllowed(request); }
+                    break;
+                case "/replay":
+                    HandleReplay(request);
+                    break;
                 case "/record/start":
                     HandleRecordStart(request);
                     break;
@@ -157,6 +227,7 @@ namespace RobotEngine.Sim
         {
             if (request.Method == "GET") { MethodNotAllowed(request); return; }
             if (busy) { RespondBusy(request); return; }
+            if (replayActive) { RespondReplay(request); return; }
 
             MoveBody body;
             if (!TryParseBody(request, out body))
@@ -182,6 +253,7 @@ namespace RobotEngine.Sim
                 else
                 {
                     engineState = carrying ? "Carry" : "GoToObject";
+                    RecordTrailPoint();
                 }
 
                 RespondJson(request, 200, ApiJson.Obj(
@@ -195,6 +267,7 @@ namespace RobotEngine.Sim
         {
             if (request.Method == "GET") { MethodNotAllowed(request); return; }
             if (busy) { RespondBusy(request); return; }
+            if (replayActive) { RespondReplay(request); return; }
 
             TurnBody body;
             if (!TryParseBody(request, out body))
@@ -210,6 +283,7 @@ namespace RobotEngine.Sim
             {
                 povRecorder.SetMotion(false);
                 busy = false;
+                RecordTrailPoint();
                 RespondJson(request, 200, ApiJson.Obj(
                     ApiJson.Num("turned", turned),
                     ApiJson.Int("retries", retries)));
@@ -220,6 +294,7 @@ namespace RobotEngine.Sim
         {
             if (request.Method == "GET") { MethodNotAllowed(request); return; }
             if (busy) { RespondBusy(request); return; }
+            if (replayActive) { RespondReplay(request); return; }
 
             // Success/failure only; the engine never names the object.
             bool success = robot.TryPickup();
@@ -235,6 +310,7 @@ namespace RobotEngine.Sim
         {
             if (request.Method == "GET") { MethodNotAllowed(request); return; }
             if (busy) { RespondBusy(request); return; }
+            if (replayActive) { RespondReplay(request); return; }
 
             if (robot.HeldObject == null)
             {
@@ -253,6 +329,7 @@ namespace RobotEngine.Sim
                 povRecorder.SetMotion(false);
                 busy = false;
                 engineState = inZone ? "Done" : "Idle";
+                RecordTrailPoint();
                 RespondJson(request, 200, ApiJson.Obj(ApiJson.Bool("in_zone", inZone)));
             }));
         }
@@ -262,8 +339,148 @@ namespace RobotEngine.Sim
             if (request.Method == "GET") { MethodNotAllowed(request); return; }
             if (busy) { RespondBusy(request); return; }
 
+            ResetBody body;
+            if (!TryParseBody(request, out body))
+            {
+                return;
+            }
+
+            replayActive = false;
+            if (body.seed > 0)
+            {
+                // Seeded randomizable layouts: rebuild the room deterministically.
+                world.Rebuild(body.seed);
+            }
+
             ResetWorld();
-            RespondJson(request, 200, ApiJson.Obj(ApiJson.Bool("ok", true)));
+            RespondJson(request, 200, ApiJson.Obj(
+                ApiJson.Bool("ok", true),
+                ApiJson.Int("seed", body.seed)));
+        }
+
+        private void HandleLog(ApiRequest request)
+        {
+            if (request.Method == "GET") { MethodNotAllowed(request); return; }
+
+            LogBody body;
+            if (!TryParseBody(request, out body))
+            {
+                return;
+            }
+
+            logEntries.Add(new LogEntry
+            {
+                Step = body.step,
+                State = body.state ?? "",
+                Tool = body.tool ?? "",
+                Args = body.args ?? "",
+                Result = body.result ?? "",
+                Collided = body.collided,
+                Note = body.note ?? "",
+                Retries = body.retries,
+                Outcome = body.outcome ?? "",
+                FramePath = body.frame_path ?? "",
+                X = body.x,
+                Y = body.y,
+                Heading = body.heading,
+                Holding = body.holding,
+                Timestamp = DateTime.UtcNow.ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture),
+            });
+            if (logEntries.Count > MaxLogEntries)
+            {
+                logEntries.RemoveAt(0);
+            }
+
+            RespondJson(request, 200, ApiJson.Obj(ApiJson.Bool("ok", true), ApiJson.Int("count", logEntries.Count)));
+        }
+
+        private void HandleLogs(ApiRequest request)
+        {
+            string lastTool = logEntries.Count > 0 ? logEntries[logEntries.Count - 1].Tool : "";
+            RespondJson(request, 200, ApiJson.Obj(
+                ApiJson.Int("count", logEntries.Count),
+                ApiJson.Str("last_tool", lastTool)));
+        }
+
+        private void HandleReplay(ApiRequest request)
+        {
+            if (request.Method == "GET") { MethodNotAllowed(request); return; }
+            if (busy) { RespondBusy(request); return; }
+
+            ReplayBody body;
+            if (!TryParseBody(request, out body))
+            {
+                return;
+            }
+
+            if (!body.active)
+            {
+                ExitReplay();
+                RespondJson(request, 200, ApiJson.Obj(ApiJson.Bool("ok", true)));
+                return;
+            }
+
+            if (logEntries.Count == 0)
+            {
+                RespondJson(request, 200, ApiJson.Obj(ApiJson.Bool("ok", false),
+                    ApiJson.Str("error", "no log entries to replay")));
+                return;
+            }
+
+            if (SetReplay(body.index))
+            {
+                RespondJson(request, 200, ApiJson.Obj(ApiJson.Bool("ok", true),
+                    ApiJson.Int("index", replayIndex),
+                    ApiJson.Str("tool", logEntries[replayIndex].Tool)));
+            }
+            else
+            {
+                RespondJson(request, 200, ApiJson.Obj(ApiJson.Bool("ok", false)));
+            }
+        }
+
+        /// <summary>Scrubs the finished run: teleports the robot to the entry's pose.</summary>
+        public bool SetReplay(int index)
+        {
+            if (busy || logEntries.Count == 0)
+            {
+                return false;
+            }
+
+            if (!replayActive)
+            {
+                // Remember the live pose so leaving replay can restore it.
+                replayReturnPose = CoordinateConverter.UnityToApiPosition(robot.transform.position);
+                replayReturnHeading = CoordinateConverter.UnityYawToApiHeading(robot.transform.eulerAngles.y);
+                replayReturnHolding = robot.HeldObject != null;
+            }
+
+            replayIndex = Mathf.Clamp(index, 0, logEntries.Count - 1);
+            LogEntry entry = logEntries[replayIndex];
+            robot.transform.position = CoordinateConverter.ApiToUnityPosition(entry.X, entry.Y);
+            robot.transform.rotation = Quaternion.Euler(0f,
+                CoordinateConverter.ApiHeadingToUnityYaw(entry.Heading), 0f);
+            replayActive = true;
+            return true;
+        }
+
+        /// <summary>Leaves replay and restores the live pose captured on entry.</summary>
+        public void ExitReplay()
+        {
+            if (!replayActive)
+            {
+                return;
+            }
+
+            replayActive = false;
+            robot.transform.position = CoordinateConverter.ApiToUnityPosition(replayReturnPose.x, replayReturnPose.y);
+            robot.transform.rotation = Quaternion.Euler(0f,
+                CoordinateConverter.ApiHeadingToUnityYaw(replayReturnHeading), 0f);
+        }
+
+        public LogEntry ReplayEntry()
+        {
+            return replayActive && logEntries.Count > 0 ? logEntries[replayIndex] : null;
         }
 
         private void HandleRecordStart(ApiRequest request)
@@ -293,6 +510,7 @@ namespace RobotEngine.Sim
 
             runDirectory = framesDirectory;
             povRecorder.StartSession(framesDirectory);
+            recordingStartedAt = Time.time;
             File.WriteAllText(Path.Combine(framesDirectory, "engine_meta.json"),
                 ApiJson.Obj(ApiJson.Str("command", activeCommand)) + "\n");
             RespondJson(request, 200, ApiJson.Obj(ApiJson.Bool("ok", true),
@@ -304,15 +522,31 @@ namespace RobotEngine.Sim
             if (request.Method == "GET") { MethodNotAllowed(request); return; }
 
             int frames = povRecorder.StopSession();
+            float seconds = frames / 20f;
+            recordingStartedAt = -1f;
             string metaPath = Path.Combine(runDirectory, "engine_meta.json");
             if (File.Exists(metaPath))
             {
                 File.WriteAllText(metaPath, ApiJson.Obj(
                     ApiJson.Str("command", activeCommand),
-                    ApiJson.Int("frames", frames)) + "\n");
+                    ApiJson.Int("frames", frames),
+                    ApiJson.Num("seconds", seconds)) + "\n");
             }
 
-            RespondJson(request, 200, ApiJson.Obj(ApiJson.Int("frames", frames)));
+            RespondJson(request, 200, ApiJson.Obj(
+                ApiJson.Int("frames", frames),
+                ApiJson.Num("seconds", seconds),
+                ApiJson.Bool("too_long", seconds > 20f)));
+        }
+
+        private void RecordTrailPoint()
+        {
+            Vector2 pose = CoordinateConverter.UnityToApiPosition(robot.transform.position);
+            trail.Add(pose);
+            if (trail.Count > 500)
+            {
+                trail.RemoveAt(0);
+            }
         }
 
         private void ResetWorld()
@@ -323,11 +557,14 @@ namespace RobotEngine.Sim
             robot.transform.rotation = Quaternion.Euler(0f, CoordinateConverter.ApiHeadingToUnityYaw(startHeading), 0f);
             retries = 0;
             engineState = "Idle";
+            trail.Clear();
         }
 
-        private bool TryParseBody<T>(ApiRequest request, out T body)
+        private bool TryParseBody<T>(ApiRequest request, out T body) where T : new()
         {
-            body = JsonUtility.FromJson<T>(request.Body ?? "");
+            // Empty body (pickup, reset, ...) means "all defaults".
+            string payload = request.Body;
+            body = string.IsNullOrWhiteSpace(payload) ? new T() : JsonUtility.FromJson<T>(payload);
             if (body == null)
             {
                 RespondJson(request, 400, ApiJson.Obj(ApiJson.Str("error", "invalid JSON body")));
@@ -345,6 +582,11 @@ namespace RobotEngine.Sim
         private void RespondBusy(ApiRequest request)
         {
             RespondJson(request, 409, ApiJson.Obj(ApiJson.Str("error", "engine busy")));
+        }
+
+        private void RespondReplay(ApiRequest request)
+        {
+            RespondJson(request, 409, ApiJson.Obj(ApiJson.Str("error", "replay active")));
         }
 
         private static void RespondJson(ApiRequest request, int status, string json)
@@ -372,6 +614,38 @@ namespace RobotEngine.Sim
         {
             public string command;
             public string frames_dir;
+        }
+
+        [Serializable]
+        private sealed class ResetBody
+        {
+            public int seed;
+        }
+
+        [Serializable]
+        private sealed class ReplayBody
+        {
+            public bool active;
+            public int index;
+        }
+
+        [Serializable]
+        private sealed class LogBody
+        {
+            public int step;
+            public string state;
+            public string tool;
+            public string args;
+            public string result;
+            public bool collided;
+            public string note;
+            public int retries;
+            public string outcome;
+            public string frame_path;
+            public float x;
+            public float y;
+            public float heading;
+            public bool holding;
         }
     }
 }
