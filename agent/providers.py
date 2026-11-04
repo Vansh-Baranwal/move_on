@@ -86,6 +86,7 @@ class ClaudeProvider:
         self.messages: list[dict] = []
         self.totals = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
         self._pending_id = None
+        self._image_notes: dict[int, str] = {}
 
     def decide(self, text: str, jpeg: bytes | None = None):
         content = []
@@ -96,13 +97,14 @@ class ClaudeProvider:
             })
         content.append({"type": "text", "text": text})
         self.messages.append({"role": "user", "content": content})
+        image_index = len(self.messages) - 1
 
         response = self.client.messages.create(
             model=self.model,
-            max_tokens=1024,
+            max_tokens=4096,
             system=[{"type": "text", "text": SYSTEM_TEXT, "cache_control": {"type": "ephemeral"}}],
             tools=TOOLS,
-            messages=prune_anthropic_images(self.messages),
+            messages=prune_anthropic_images(self.messages, self._image_notes),
         )
 
         usage = response.usage
@@ -116,15 +118,18 @@ class ClaudeProvider:
             self.totals[key] += step_usage[key]
 
         tool_uses = [block for block in response.content if block.type == "tool_use"]
+        note = " ".join(getattr(block, "text", "") for block in response.content if block.type == "text").strip()
         self.messages.append({"role": "assistant", "content": response.content})
+        if jpeg is not None and note:
+            self._image_notes[image_index] = note
 
         if not tool_uses:
-            self.messages.append({"role": "user", "content": [{"type": "text", "text": "Reply with exactly one tool call."}]})
-            return "none", {}, step_usage
+            self.messages.append({"role": "user", "content": [{"type": "text", "text": "Reply with your SEE line and exactly one tool call."}]})
+            return "none", {}, step_usage, note
 
         call = tool_uses[0]
         self._pending_id = call.id
-        return call.name, dict(call.input or {}), step_usage
+        return call.name, dict(call.input or {}), step_usage, note
 
     def report(self, result_json: str) -> None:
         self.messages.append({
@@ -167,6 +172,7 @@ class OpenAICompatProvider:
         self.messages: list[dict] = [{"role": "system", "content": SYSTEM_TEXT}]
         self.totals = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
         self._pending_id = None
+        self._image_notes: dict[int, str] = {}
 
     def decide(self, text: str, jpeg: bytes | None = None):
         parts = [{"type": "text", "text": text}]
@@ -174,6 +180,7 @@ class OpenAICompatProvider:
             encoded = base64.b64encode(jpeg).decode()
             parts.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{encoded}"}})
         self.messages.append({"role": "user", "content": parts})
+        image_index = len(self.messages) - 1
 
         response = self.client.chat.completions.create(
             model=self.model,
@@ -182,7 +189,7 @@ class OpenAICompatProvider:
             max_tokens=4096,
             tools=self.openai_tools,
             tool_choice="auto",
-            messages=prune_openai_images(self.messages),
+            messages=prune_openai_images(self.messages, self._image_notes),
         )
 
         usage = response.usage
@@ -196,6 +203,7 @@ class OpenAICompatProvider:
             self.totals[key] += step_usage[key]
 
         message = response.choices[0].message
+        note = (message.content or "").strip()
         assistant = {"role": "assistant", "content": message.content}
         if message.tool_calls:
             assistant["tool_calls"] = [
@@ -207,10 +215,12 @@ class OpenAICompatProvider:
                 for call in message.tool_calls
             ]
         self.messages.append(assistant)
+        if jpeg is not None and note:
+            self._image_notes[image_index] = note
 
         if not message.tool_calls:
-            self.messages.append({"role": "user", "content": "Reply with exactly one tool call."})
-            return "none", {}, step_usage
+            self.messages.append({"role": "user", "content": "Reply with your SEE line and exactly one tool call."})
+            return "none", {}, step_usage, note
 
         call = message.tool_calls[0]
         self._pending_id = call.id
@@ -220,14 +230,16 @@ class OpenAICompatProvider:
             args = {}
         if not isinstance(args, dict):
             args = {}
-        return call.function.name, args, step_usage
+        return call.function.name, args, step_usage, note
 
     def report(self, result_json: str) -> None:
         self.messages.append({"role": "tool", "tool_call_id": self._pending_id, "content": result_json})
 
 
-def prune_anthropic_images(messages: list[dict]) -> list[dict]:
-    """Keep only the latest camera image; earlier ones become one-line notes."""
+def prune_anthropic_images(messages: list[dict], image_notes: dict[int, str] | None = None) -> list[dict]:
+    """Keep only the latest camera image; earlier ones become the model's own
+    one-line SEE note for that step - its persistent visual memory."""
+    image_notes = image_notes or {}
     last_image = -1
     for index, message in enumerate(messages):
         if message["role"] == "user" and any(
@@ -240,8 +252,9 @@ def prune_anthropic_images(messages: list[dict]) -> list[dict]:
         if index == last_image or message["role"] != "user":
             pruned.append(message)
             continue
+        placeholder = image_notes.get(index) or "[camera frame from an earlier step omitted]"
         content = [
-            {"type": "text", "text": "[camera frame from an earlier step omitted]"}
+            {"type": "text", "text": f"[earlier frame - you said: {placeholder}]"}
             if isinstance(block, dict) and block.get("type") == "image"
             else block
             for block in message["content"]
@@ -250,8 +263,9 @@ def prune_anthropic_images(messages: list[dict]) -> list[dict]:
     return pruned
 
 
-def prune_openai_images(messages: list[dict]) -> list[dict]:
+def prune_openai_images(messages: list[dict], image_notes: dict[int, str] | None = None) -> list[dict]:
     """Same one-image rule for the OpenAI message format."""
+    image_notes = image_notes or {}
     last_image = -1
     for index, message in enumerate(messages):
         if message["role"] == "user" and isinstance(message["content"], list) and any(
@@ -264,8 +278,9 @@ def prune_openai_images(messages: list[dict]) -> list[dict]:
         if index == last_image or message["role"] != "user" or not isinstance(message["content"], list):
             pruned.append(message)
             continue
+        placeholder = image_notes.get(index) or "[camera frame from an earlier step omitted]"
         content = [
-            {"type": "text", "text": "[camera frame from an earlier step omitted]"}
+            {"type": "text", "text": f"[earlier frame - you said: {placeholder}]"}
             if part.get("type") == "image_url"
             else part
             for part in message["content"]

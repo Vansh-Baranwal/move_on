@@ -72,7 +72,7 @@ class RunLogger:
         with self.log_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-    def event(self, tool: str, args: dict, result, frame_path: str | None = None, usage: dict | None = None):
+    def event(self, tool: str, args: dict, result, frame_path: str | None = None, usage: dict | None = None, note: str | None = None):
         record = {
             "step": self.step,
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -83,6 +83,8 @@ class RunLogger:
         }
         if usage:
             record["usage"] = usage
+        if note:
+            record["note"] = note
         self.write(record)
 
 
@@ -112,16 +114,18 @@ def run_llm(engine: EngineClient, logger: RunLogger, command: str, provider, max
             frame_path = None
             state_line += " (no new image this step; move or turn to refresh the view)"
 
-        tool_name, tool_args, usage = provider.decide(state_line, jpeg)
+        tool_name, tool_args, usage, note = provider.decide(state_line, jpeg)
 
         if tool_name == "none":
-            print(f"  step {logger.step}: (no tool call - nudging)")
-            logger.event("none", {}, {"error": "no tool call"}, frame_path=frame_path, usage=usage)
+            print(f"  step {logger.step}: (no tool call) SEE: {note[:120]}")
+            logger.event("none", {}, {"error": "no tool call"}, frame_path=frame_path, usage=usage, note=note)
             continue
 
         result, finished, moved = execute_tool(engine, tool_name, tool_args)
-        print(f"  step {logger.step}: {tool_name} {tool_args} -> {json.dumps(result)[:100]}")
-        logger.event(tool_name, tool_args, result, frame_path=frame_path, usage=usage)
+        print(f"  step {logger.step}: {tool_name} {tool_args} -> {json.dumps(result)[:90]}")
+        if note:
+            print(f"           SEE: {note[:140]}")
+        logger.event(tool_name, tool_args, result, frame_path=frame_path, usage=usage, note=note)
         provider.report(json.dumps(result))
 
         if finished:

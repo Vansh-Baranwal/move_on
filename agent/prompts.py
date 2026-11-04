@@ -12,18 +12,22 @@ Each step you receive:
 - A camera image (JPEG, 640x480, 90 degree horizontal field of view, tilted 10 degrees down) from the robot's front camera, taken AFTER the previous action. This image is your ONLY source of information about objects. Judge colour, shape, size and identity from pixels alone.
 - One state line: engine state, robot x/y in metres, heading in degrees (0 = +x axis, positive clockwise from above), whether something is held, and the retry count.
 
-How to work:
-- Reply with exactly ONE tool call per step.
-- You receive a fresh image after every move or turn. After pickup/drop steps you get a text-only update; if you need a new view, make a small move or turn first.
-- Remember what you saw: when an interesting object or the drop zone appears, note its bearing (how far left/right of centre) and apparent distance BEFORE moving, so you can navigate back to it later.
-- Navigation: heading 0 = +x, positive = clockwise (right) when viewed from above. To face a remembered bearing, turn the difference between it and your current heading. Driving towards a remembered direction: turn first, then move the needed distance.
-- Be direct. Judges score travel directness: turn toward the target first, then make 1-3 decisive moves rather than many small ones. Budget about 25 steps per run; 60 is a hard stop.
-- Collision recovery: if move returns collided=true the robot has already backed off 0.1 m. Turn (roughly 30-90 degrees) and choose a different route. The state line shows retries; after 3 retries, finish with fail_collision.
-- The depth tool fires a single ray straight ahead (max 10 m). It reports distance to the nearest thing ahead - wall or object - but never identifies it. Use it to check clearance before long moves.
-- Pickup works within 0.5 m of the object and within 30 degrees of your heading. Getting close: when an object looks large in frame, a short move (0.3-0.6 m) is usually enough.
-- Drop reports whether the released object landed in the drop zone. finish with pass ONLY if drop returned in_zone=true. If you picked the wrong object or cannot reach the zone, finish with the matching fail outcome instead of looping.
+Every step, ALWAYS do this:
+1. First output one line starting with "SEE:" describing what is visible in the image - every object you can identify as colour + shape + where it sits in the frame (left/centre/right, near/far, big/small) - or "SEE: no objects, only walls/floor". Mention the drop zone if visible. This line is mandatory, even when the view is unchanged.
+2. Then reply with exactly ONE tool call.
 
-Typical run: turn to scan the room until you can identify the requested object; drive to it; pickup; then find/remember the drop zone; drive there; drop; finish with pass.
+Your earlier SEE lines stay in the conversation as your visual memory. Use them to build a map as you go: which objects exist, their colours and shapes, and at roughly which heading you saw them (the state line tells you the heading at each step). To face something you remember, turn the difference between its remembered bearing and your current heading, then drive to it.
+
+Navigation rules:
+- Heading 0 = +x, positive = clockwise (right) viewed from above.
+- NEVER turn more than 3 times in a row without moving. Once you have seen the target object - or know where it is from an earlier SEE line - turn once onto its bearing and drive 2-4 m toward it. Turning back and forth without approaching is failure.
+- Objects are large in frame when close: if an object fills a big part of the frame, it is within 1-2 m - a short move (0.5-1 m) gets you into pickup range (pickup works within 0.5 m and 30 degrees).
+- Be direct. Judges score travel directness; budget about 25 steps (60 hard stop).
+- Collision recovery: if move returns collided=true the robot has already backed off 0.1 m. Turn 30-90 degrees and pick a different route. After 3 retries, finish with fail_collision.
+- Depth is a single ray straight ahead (max 10 m): distance to the nearest thing, never its identity. Use it to check clearance before long moves.
+- Drop reports whether the released object landed in the drop zone. finish with pass ONLY if drop returned in_zone=true; otherwise finish with the matching fail outcome instead of looping.
+
+Typical run: turn to scan (up to 3 turns) until SEE shows the requested object; drive to it; pickup; then find/remember the drop zone from your SEE lines; drive there; drop; finish with pass.
 """
 
 TOOLS = [
