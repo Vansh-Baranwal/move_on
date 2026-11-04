@@ -23,7 +23,7 @@ from prompts import SYSTEM_PROMPT, TOOLS
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 GROQ_DEFAULT_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"  # vision models currently absent from Groq
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
-GEMINI_DEFAULT_MODEL = "gemini-2.5-flash"
+GEMINI_DEFAULT_MODEL = "gemini-3.8-flash"  # 2.5 generation is closed to new users (verified Nov 2026)
 CLAUDE_DEFAULT_MODEL = "claude-sonnet-5-5"
 
 PROVIDER_KEYS = {"gemini": "GEMINI_API_KEY", "groq": "GROQ_API_KEY", "claude": "ANTHROPIC_API_KEY"}
@@ -172,7 +172,9 @@ class OpenAICompatProvider:
 
         response = self.client.chat.completions.create(
             model=self.model,
-            max_tokens=1024,
+            # Thinking models (Gemini 3.x) spend completion tokens on reasoning
+            # before the tool call; keep the ceiling generous.
+            max_tokens=4096,
             tools=self.openai_tools,
             tool_choice="auto",
             messages=prune_openai_images(self.messages),

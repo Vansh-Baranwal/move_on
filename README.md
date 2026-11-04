@@ -36,7 +36,7 @@ python tools/make_clip.py logs/<run_dir>
 
 | Provider | Command | API key env var | Default model |
 |---|---|---|---|
-| Gemini (default) | `--provider gemini` | `GEMINI_API_KEY` | `gemini-2.5-flash` |
+| Gemini (default) | `--provider gemini` | `GEMINI_API_KEY` | `gemini-3.8-flash` (thinking model)
 | Groq | `--provider groq` | `GROQ_API_KEY` | `meta-llama/llama-4-scout-17b-16e-instruct` (no vision models on Groq right now) |
 | Claude | `--provider claude` | `ANTHROPIC_API_KEY` | `claude-sonnet-5-5` |
 
