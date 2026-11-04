@@ -31,6 +31,25 @@ RUN_OUTCOMES = ("pass", "fail_wrong_object", "fail_not_reached", "fail_collision
 MOVEMENT_TOOLS = ("move", "turn")
 
 
+def load_env_file(path: Path) -> None:
+    """Load KEY=VALUE pairs from a .env file into os.environ (never overriding
+    variables already set in the shell). Lets you keep API keys out of both
+    the terminal and the repository."""
+    if not path.exists():
+        return
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+load_env_file(Path(__file__).resolve().parent.parent / ".env")
+
+
 class RunLogger:
     """JSONL log + PNG frames for one run, per the spec's logging contract."""
 

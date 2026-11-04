@@ -56,3 +56,6 @@ smoke_test_result.txt
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Secrets (API keys) - never commit
+.env
