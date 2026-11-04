@@ -5,9 +5,11 @@ Robot Hackathon track: type a plain-language command, the model finds the object
 from camera pixels alone, drives the wheeled robot to it, picks it up, carries it
 to the drop zone and releases it.
 
-**LLM backend: Gemini (free tier) by default for now; Groq currently serves no
-vision models (catalog verified Nov 2026). Claude/Sonnet stays behind
-`--provider claude` for the switch back — see "LLM provider" below.**
+**Brain: local pixel-analysis policy by default (no API, no rate limits) —
+it detects objects from /look frames with colour-blob analysis, verifies
+identity with the depth sensor, and completed the full fetch cycle in live
+runs. Claude/Sonnet stays behind `--provider claude` as the reasoning brain
+for commands that need navigation around obstacles — see "LLM provider".**
 
 ## Quick start
 
@@ -24,9 +26,11 @@ pip install -r requirements.txt
 # 3. Plumbing test — zero API cost, touches every endpoint:
 python agent/main.py --dummy
 
-# 4. Real run (needs GEMINI_API_KEY in the environment):
-export GEMINI_API_KEY="..."
+# 4. Real run - the local vision policy needs no API key at all:
 python agent/main.py --command "Bring the round red thing."
+
+#    Or hand the brain to Claude (ANTHROPIC_API_KEY required):
+python agent/main.py --provider claude --command "Bring the round red thing."
 
 # 5. Phase 2 clip from the recorded POV frames (MP4 720p, 10–20 s, command overlay):
 python tools/make_clip.py logs/<run_dir>

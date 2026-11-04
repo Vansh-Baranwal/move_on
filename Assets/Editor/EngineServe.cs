@@ -36,7 +36,7 @@ namespace RobotEngine.EditorTools
             }
 
             string stopFile = Path.Combine(Directory.GetParent(Application.dataPath).FullName, "serve_stop");
-            bool timedOut = EditorApplication.timeSinceStartup - playStart > 300.0;
+            bool timedOut = EditorApplication.timeSinceStartup - playStart > 900.0;
             if (File.Exists(stopFile) || timedOut)
             {
                 if (File.Exists(stopFile))

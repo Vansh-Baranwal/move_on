@@ -195,9 +195,8 @@ def run_dummy(engine: EngineClient, logger: RunLogger):
 def main() -> int:
     parser = argparse.ArgumentParser(description="Membrane robot fetch agent")
     parser.add_argument("--command", help='Plain-language command, e.g. "Bring the round red thing."')
-    parser.add_argument("--provider", choices=("gemini", "groq", "claude"), default="gemini",
-                        help="LLM backend (default gemini: Groq currently has no vision models; "
-                             "claude kept for the switch-back)")
+    parser.add_argument("--provider", choices=("local", "claude"), default="local",
+                        help="Brain: local pixel-analysis policy (no API) or Claude")
     parser.add_argument("--model", default=None, help="Override the provider's default model")
     parser.add_argument("--max-steps", type=int, default=25, help="Soft target 25; hard stop 60.")
     parser.add_argument("--base-url", default="http://localhost:8080")
@@ -231,7 +230,7 @@ def main() -> int:
             outcome, reason, totals = run_dummy(engine, logger)
         else:
             check_api_key(args.provider)
-            provider = create_provider(args.provider, model)
+            provider = create_provider(args.provider, model, command=command)
             outcome, reason, totals = run_llm(engine, logger, command, provider, max_steps)
     finally:
         if not args.no_record:
