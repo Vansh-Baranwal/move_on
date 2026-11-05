@@ -121,7 +121,15 @@ namespace RobotEngine.Views
         /// <summary>Projects a camera pixel into the scene and returns its first non-robot hit.</summary>
         public bool TryGetWorldPointAt(float viewportX, float viewportY, out Vector3 point)
         {
+            Collider hitCollider;
+            return TryGetWorldPointAt(viewportX, viewportY, out point, out hitCollider);
+        }
+
+        public bool TryGetWorldPointAt(float viewportX, float viewportY, out Vector3 point,
+            out Collider hitCollider)
+        {
             point = Vector3.zero;
+            hitCollider = null;
             Ray ray = agentCamera.ViewportPointToRay(new Vector3(
                 Mathf.Clamp01(viewportX), Mathf.Clamp01(viewportY), 0f));
             RaycastHit[] hits = Physics.RaycastAll(ray, MaxDepth, Physics.DefaultRaycastLayers,
@@ -135,6 +143,7 @@ namespace RobotEngine.Views
                 }
 
                 point = hits[i].point;
+                hitCollider = hits[i].collider;
                 return true;
             }
 

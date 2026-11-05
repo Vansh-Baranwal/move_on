@@ -16,7 +16,7 @@ namespace RobotEngine.World
         private const float RoomSize = 10f;
         private const float WallHeight = 2.5f;
         private const float WallThickness = 0.2f;
-        private const float DropZoneSize = 1.25f;
+        private const float DropZoneSize = 3.0f;
         private const int MaxLayoutAttempts = 300;
 
         private static readonly string[] ShapePlan = { "cube", "cube", "sphere", "cylinder", "cone" };
@@ -291,9 +291,10 @@ namespace RobotEngine.World
                     objects[i] = new LayoutValidator.LayoutObject(position, height, ShapePlan[i]);
                 }
 
-                Vector2 zoneCenter = new Vector2(
-                    1.5f + (float)random.NextDouble() * 2.3f,
-                    -3.8f + (float)random.NextDouble() * 2.3f);
+                float zoneInset = RoomSize / 2f - DropZoneSize / 2f - 0.30f;
+                float zoneCenterX = 1.5f + (float)random.NextDouble() * (zoneInset - 1.5f);
+                float zoneCenterZ = -zoneInset + (float)random.NextDouble() * (zoneInset - 1.5f);
+                Vector2 zoneCenter = new Vector2(zoneCenterX, zoneCenterZ);
                 try
                 {
                     LayoutValidator.Validate(objects, new Vector2(-3.4f, -3.4f), zoneCenter, DropZoneSize, RoomSize);
@@ -320,7 +321,7 @@ namespace RobotEngine.World
                     new LayoutValidator.LayoutObject(new Vector2(2.8f, 0.2f), 0.55f, "cone"),
                 },
                 new[] { "red", "blue", "red", "yellow", "green" },
-                new Vector2(3.1f, -3.1f));
+                new Vector2(3.1f, 3.1f));
         }
 
         private static GameObject CreateShape(string objectName, LayoutValidator.LayoutObject spec,

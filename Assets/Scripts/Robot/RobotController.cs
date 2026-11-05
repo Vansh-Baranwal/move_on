@@ -44,7 +44,10 @@ namespace RobotEngine.Robot
         private readonly List<Transform> wheels = new List<Transform>();
         private Transform holdPoint;
         private GameObject visualsGroup;
-        private const float GlbYawCorrection = 180f;
+        // The replacement GLB faces local +Z, matching Robot.transform.forward.
+        private const float GlbYawCorrection = 0f;
+        // Imported bounds of the previous model after its runtime normalization.
+        private static readonly Vector3 PreviousModelSize = new Vector3(0.32345f, 0.42485f, 0.55f);
         private Transform heldObject;
 
         public Transform HeldObject
@@ -191,28 +194,44 @@ namespace RobotEngine.Robot
                     return;
                 }
 
-                // Uniform scale to 0.7 m tall, capped so it never exceeds the collider width.
-                float scale = Mathf.Min(0.7f / bounds.size.y, 0.55f / Mathf.Max(bounds.size.x, bounds.size.z));
-                scale = Mathf.Clamp(scale, 0.0001f, 1000f);
-                holder.transform.localScale = Vector3.one * scale;
+                // Measure the imported geometry in holder-local axes. The old model normalized
+                // to this exact envelope, so the replacement stays inside the same clearances.
+                Vector3 localMin = new Vector3(float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity);
+                Vector3 localMax = new Vector3(float.NegativeInfinity, float.NegativeInfinity, float.NegativeInfinity);
+                for (int corner = 0; corner < 8; corner++)
+                {
+                    Vector3 worldCorner = new Vector3(
+                        (corner & 1) == 0 ? bounds.min.x : bounds.max.x,
+                        (corner & 2) == 0 ? bounds.min.y : bounds.max.y,
+                        (corner & 4) == 0 ? bounds.min.z : bounds.max.z);
+                    Vector3 localCorner = holder.transform.InverseTransformPoint(worldCorner);
+                    localMin = Vector3.Min(localMin, localCorner);
+                    localMax = Vector3.Max(localMax, localCorner);
+                }
 
-                // Base on the floor, horizontally centred on the robot root.
-                Vector3 rootPosition = transform.position;
-                Vector3 center = bounds.center;
-                Vector3 min = bounds.min;
+                Vector3 localSize = localMax - localMin;
+                Vector3 scale = new Vector3(
+                    PreviousModelSize.x / Mathf.Max(localSize.x, 0.0001f),
+                    PreviousModelSize.y / Mathf.Max(localSize.y, 0.0001f),
+                    PreviousModelSize.z / Mathf.Max(localSize.z, 0.0001f));
+                holder.transform.localScale = scale;
+
+                // Base on the floor and centre the model on the robot root.
+                Vector3 localCenter = (localMin + localMax) * 0.5f;
                 holder.transform.localPosition = new Vector3(
-                    -(center.x - rootPosition.x) * scale,
-                    -min.y * scale,
-                    -(center.z - rootPosition.z) * scale);
+                    -localCenter.x * scale.x,
+                    -localMin.y * scale.y,
+                    -localCenter.z * scale.z);
 
                 if (visualsGroup != null)
                 {
                     visualsGroup.SetActive(false);
                 }
 
-                Debug.Log("Custom robot model loaded from " + path + " (native " +
-                    bounds.size.y.ToString("F2", CultureInfo.InvariantCulture) + " m tall, scaled x" +
-                    scale.ToString("F4", CultureInfo.InvariantCulture) + ")");
+                Debug.Log("Custom robot model loaded from " + path + " (fitted to " +
+                    PreviousModelSize.x.ToString("F2", CultureInfo.InvariantCulture) + " x " +
+                    PreviousModelSize.y.ToString("F2", CultureInfo.InvariantCulture) + " x " +
+                    PreviousModelSize.z.ToString("F2", CultureInfo.InvariantCulture) + " m previous visual envelope)");
             }
             catch (Exception ex)
             {
@@ -300,7 +319,12 @@ namespace RobotEngine.Robot
         /// </summary>
         public bool TryPickup()
         {
-            Transform target = FindPickupTarget();
+            return TryPickup(null);
+        }
+
+        public bool TryPickup(Transform preferredTarget)
+        {
+            Transform target = FindPickupTarget(preferredTarget);
             if (target == null)
             {
                 return false;
@@ -360,6 +384,7 @@ namespace RobotEngine.Robot
             Transform dropped = heldObject;
             heldObject = null;
             dropped.SetParent(null, true);
+            bool releasedOverZone = SceneRegistry.IsInsideDropZone(dropped.position);
             foreach (Collider collider in dropped.GetComponentsInChildren<Collider>(true))
             {
                 collider.enabled = true;
@@ -385,6 +410,15 @@ namespace RobotEngine.Robot
                 body.isKinematic = true;
             }
 
+            if (releasedOverZone)
+            {
+                Vector3 freePosition;
+                if (SceneRegistry.TryFindFreeDropPosition(dropped.gameObject, dropped.position, out freePosition))
+                {
+                    dropped.position = new Vector3(freePosition.x, dropped.position.y, freePosition.z);
+                }
+            }
+
             done(SceneRegistry.IsInsideDropZone(dropped.position));
         }
 
@@ -398,7 +432,7 @@ namespace RobotEngine.Robot
             }
         }
 
-        private Transform FindPickupTarget()
+        private Transform FindPickupTarget(Transform preferredTarget)
         {
             Vector2 forward = new Vector2(transform.forward.x, transform.forward.z).normalized;
             Transform best = null;
@@ -406,6 +440,11 @@ namespace RobotEngine.Robot
 
             foreach (GameObject candidate in SceneRegistry.GetFetchables())
             {
+                if (preferredTarget != null && candidate.transform != preferredTarget)
+                {
+                    continue;
+                }
+
                 if (candidate.transform == heldObject)
                 {
                     continue;
@@ -464,6 +503,25 @@ namespace RobotEngine.Robot
             }
         }
 
+        /// <summary>Tests whether the robot capsule can occupy a floor position.</summary>
+        public bool IsPositionClear(Vector2 position)
+        {
+            Vector3 center = new Vector3(position.x, CastCenterHeight, position.y);
+            float halfHeight = Mathf.Max(CastHeight * 0.5f - CastRadius, 0.01f);
+            Vector3 bottom = center - transform.up * halfHeight;
+            Vector3 top = center + transform.up * halfHeight;
+            Collider[] overlaps = Physics.OverlapCapsule(bottom, top, CastRadius,
+                Physics.DefaultRaycastLayers, QueryTriggerInteraction.Ignore);
+            for (int i = 0; i < overlaps.Length; i++)
+            {
+                if (!overlaps[i].transform.IsChildOf(transform))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
         /// <summary>Returns how far the robot can safely travel along a direction.</summary>
         public float GetTravelClearance(Vector3 direction, float distance)
         {
