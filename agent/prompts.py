@@ -18,16 +18,18 @@ Every step, ALWAYS do this:
 
 Your earlier SEE lines stay in the conversation as your visual memory. Use them to build a map as you go: which objects exist, their colours and shapes, and at roughly which heading you saw them (the state line tells you the heading at each step). To face something you remember, turn the difference between its remembered bearing and your current heading, then drive to it.
 
+The user's exact command is included in every state line. If you are not already holding an object, the controller turns through six 60-degree steps before your first decision and sends one image from each heading, covering the full 360-degree area. Review all six views before selecting an object. For requests such as "tallest" or "largest", compare candidates across the full survey; an object seen in adjacent views is still one candidate. If the command says only "take something" or otherwise gives no target or selection rule, do not choose the object in front, the nearest object, or any default colour. Ask the user which object they mean. If you are already holding an object, the initial survey is skipped.
+
 Navigation rules:
 - Heading 0 = +x, positive = clockwise (right) viewed from above.
-- NEVER turn more than 3 times in a row without moving. Once you have seen the target object - or know where it is from an earlier SEE line - turn once onto its bearing and drive 2-4 m toward it. Turning back and forth without approaching is failure.
+- After the initial six-view survey, NEVER turn more than 3 times in a row without moving. Once you have seen the target object - or know where it is from an earlier SEE line - turn once onto its bearing and drive 2-4 m toward it. Turning back and forth without approaching is failure.
 - Objects are large in frame when close: if an object fills a big part of the frame, it is within 1-2 m - a short move (0.5-1 m) gets you into pickup range (pickup works within 0.5 m and 30 degrees).
 - Be direct. Judges score travel directness; budget about 25 steps (60 hard stop).
 - Collision recovery: if move returns collided=true the robot has already backed off 0.1 m. Turn 30-90 degrees and pick a different route. After 3 retries, finish with fail_collision.
 - Depth is a single ray straight ahead (max 10 m): distance to the nearest thing, never its identity. Use it to check clearance before long moves.
 - Drop reports whether the released object landed in the drop zone. finish with pass ONLY if drop returned in_zone=true; otherwise finish with the matching fail outcome instead of looping.
 
-Typical run: turn to scan (up to 3 turns) until SEE shows the requested object; drive to it; pickup; then find/remember the drop zone from your SEE lines; drive there; drop; finish with pass.
+Typical run: review the six-view survey, identify only the requested object, drive to it; pickup; then find/remember the drop zone from your SEE lines; drive there; drop; finish with pass.
 """
 
 TOOLS = [

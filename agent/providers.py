@@ -45,13 +45,15 @@ class ClaudeProvider:
         self._pending_id = None
         self._image_notes: dict[int, str] = {}
 
-    def decide(self, text: str, jpeg: bytes | None = None):
+    def decide(self, text: str, jpeg: bytes | list[bytes] | None = None):
         content = []
-        if jpeg is not None:
-            content.append({
-                "type": "image",
-                "source": {"type": "base64", "media_type": "image/jpeg", "data": base64.b64encode(jpeg).decode()},
-            })
+        images = jpeg if isinstance(jpeg, list) else [jpeg]
+        for image in images:
+            if image is not None:
+                content.append({
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": "image/jpeg", "data": base64.b64encode(image).decode()},
+                })
         content.append({"type": "text", "text": text})
         self.messages.append({"role": "user", "content": content})
         image_index = len(self.messages) - 1
@@ -83,7 +85,7 @@ class ClaudeProvider:
 
         if not tool_uses:
             self.messages.append({"role": "assistant", "content": text_blocks or content_no_thinking})
-            if jpeg is not None and note:
+            if images and any(image is not None for image in images) and note:
                 self._image_notes[image_index] = note
             self.messages.append({"role": "user", "content": [{"type": "text", "text": "Reply with your SEE line and exactly one tool call."}]})
             return "none", {}, step_usage, note
@@ -92,7 +94,7 @@ class ClaudeProvider:
         self._pending_id = call.id
         stored_content = text_blocks + [call]
         self.messages.append({"role": "assistant", "content": stored_content})
-        if jpeg is not None and note:
+        if images and any(image is not None for image in images) and note:
             self._image_notes[image_index] = note
         return call.name, dict(call.input or {}), step_usage, note
 

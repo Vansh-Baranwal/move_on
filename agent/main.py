@@ -115,6 +115,43 @@ def run_llm(engine: EngineClient, logger: RunLogger, command: str, provider, max
     outcome, reason = "fail_not_reached", "step budget exhausted"
     totals = provider.totals
     attach_image = True  # first decision always carries a frame
+    survey_images: list[bytes] = []
+    survey_paths: list[str] = []
+    survey_headings: list[float] = []
+
+    # Commands cannot move while replay mode is active. Exit replay first so
+    # the survey always covers the live scene from the robot's live pose.
+    try:
+        engine.set_replay(False)
+    except EngineError as error:
+        return "fail_not_reached", "Could not exit replay before the full-area scan: " + str(error), totals
+
+    # Do not let the first visible object win by default. A 60-degree step
+    # gives overlapping views with the 90-degree camera and returns to the
+    # starting heading after a full room survey.
+    initial_state = engine.state()
+    if not initial_state.get("holding", False):
+        for _ in range(6):
+            turn_result = engine.turn(60.0)
+            if "error" in turn_result:
+                scan_state = engine.state()
+                scan_state["step"] = logger.step + 1
+                logger.event("turn", {"degrees": 60.0}, turn_result,
+                             note="full-area survey could not continue")
+                push_step(engine, scan_state, "turn", {"degrees": 60.0}, turn_result, None,
+                          "full-area survey could not continue")
+                return "fail_not_reached", "Could not complete the full-area scan: " + str(turn_result["error"]), totals
+
+            scan_state = engine.state()
+            scan_state["step"] = logger.step + 1
+            jpeg = engine.look()
+            frame_path = logger.save_frame(jpeg)
+            survey_images.append(jpeg)
+            survey_paths.append(frame_path)
+            survey_headings.append(float(scan_state.get("heading", 0.0)))
+            note = "automatic 360-degree survey view"
+            logger.event("turn", {"degrees": 60.0}, turn_result, frame_path=frame_path, note=note)
+            push_step(engine, scan_state, "turn", {"degrees": 60.0}, turn_result, frame_path, note)
 
     for _ in range(max_steps):
         state = engine.state()
@@ -123,13 +160,20 @@ def run_llm(engine: EngineClient, logger: RunLogger, command: str, provider, max
         except EngineError:
             depth = None
         state_line = (
+            f"command={json.dumps(command, ensure_ascii=False)} "
             f"state={state['state']} x={state['x']:.2f} y={state['y']:.2f} "
             f"heading={state['heading']:.1f} holding={state['holding']} retries={state['retries']}"
         )
         state_line += " depth=null" if depth is None else f" depth={depth:.2f}m"
         state["step"] = logger.step + 1
 
-        if attach_image:
+        if survey_images:
+            jpeg = survey_images
+            frame_path = survey_paths[-1]
+            heading_list = ", ".join(f"{heading:.0f}°" for heading in survey_headings)
+            state_line += f" Initial full-area survey images are ordered at headings {heading_list}; inspect all six before choosing."
+            survey_images = []
+        elif attach_image:
             jpeg = engine.look()
             frame_path = logger.save_frame(jpeg)
         else:
