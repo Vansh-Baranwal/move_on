@@ -23,11 +23,11 @@ def _hue(deg: float) -> int:
 
 # PIL HSV hue ranges per colour name. "magenta" is the drop-zone marker.
 COLOUR_RANGES: dict[str, list[tuple[int, int]]] = {
-    "red": [(_hue(345), 255), (0, _hue(15))],
+    "red": [(_hue(350), 255), (0, _hue(10))],
     "yellow": [(_hue(40), _hue(70))],
     "green": [(_hue(100), _hue(150))],
     "blue": [(_hue(210), _hue(250))],
-    "magenta": [(_hue(290), _hue(330))],
+    "cyan": [(_hue(160), _hue(205))],  # drop zone marker - isolated from everything
 }
 
 

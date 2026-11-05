@@ -44,6 +44,7 @@ namespace RobotEngine.Robot
         private readonly List<Transform> wheels = new List<Transform>();
         private Transform holdPoint;
         private GameObject visualsGroup;
+        private const float GlbYawCorrection = 180f;
         private Transform heldObject;
 
         public Transform HeldObject
@@ -165,6 +166,7 @@ namespace RobotEngine.Robot
                 // engine's robot footprint (collider: 0.5 m wide, 0.7 m tall).
                 GameObject holder = new GameObject("CustomModel");
                 holder.transform.SetParent(transform, false);
+                holder.transform.localRotation = Quaternion.Euler(0f, GlbYawCorrection, 0f);
                 await importer.InstantiateMainSceneAsync(holder.transform);
 
                 Bounds bounds = new Bounds(holder.transform.position, Vector3.zero);

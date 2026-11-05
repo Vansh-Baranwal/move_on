@@ -70,7 +70,8 @@ namespace RobotEngine.Views
             povCamera.aspect = AspectRatio;
             povCamera.nearClipPlane = 0.03f;
             povCamera.farClipPlane = 30f;
-            povCamera.clearFlags = CameraClearFlags.Skybox;
+            povCamera.clearFlags = CameraClearFlags.SolidColor;
+            povCamera.backgroundColor = new Color(0.13f, 0.11f, 0.18f);
             povCamera.enabled = false;
         }
 

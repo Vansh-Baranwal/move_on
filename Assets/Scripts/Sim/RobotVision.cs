@@ -31,11 +31,11 @@ namespace RobotEngine.Sim
         // Hue bands in [0..1] (RGBToHSV), matching the Python detector.
         private static readonly Dictionary<string, List<Vector2>> Bands = new Dictionary<string, List<Vector2>>
         {
-            { "red", new List<Vector2> { new Vector2(345f / 360f, 1f), new Vector2(0f, 15f / 360f) } },
+            { "red", new List<Vector2> { new Vector2(350f / 360f, 1f), new Vector2(0f, 10f / 360f) } },
             { "yellow", new List<Vector2> { new Vector2(40f / 360f, 70f / 360f) } },
             { "green", new List<Vector2> { new Vector2(100f / 360f, 150f / 360f) } },
             { "blue", new List<Vector2> { new Vector2(210f / 360f, 250f / 360f) } },
-            { "magenta", new List<Vector2> { new Vector2(290f / 360f, 330f / 360f) } },
+            { "cyan", new List<Vector2> { new Vector2(160f / 360f, 205f / 360f) } },
         };
 
         public static List<Blob> Analyze(Color32[] pixels, int width, int height)

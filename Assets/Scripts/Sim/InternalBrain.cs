@@ -54,6 +54,8 @@ namespace RobotEngine.Sim
         private readonly List<KeyValuePair<float, float>> measurements = new List<KeyValuePair<float, float>>();
         private float bestHeight = -1f;
         private float bestBearing;
+        private float blindBudget;
+        private int blindSteps;
         private float lastDepth = float.NaN;
         private bool attachImage = true;
 
@@ -77,6 +79,8 @@ namespace RobotEngine.Sim
             runDirectory = directory;
             Step = 0;
             Outcome = "";
+            blindBudget = 0f;
+            blindSteps = 0;
             targetColour = null;
             targetShape = null;
             mode = "colour";
@@ -271,9 +275,16 @@ namespace RobotEngine.Sim
                 bool moved = tool == "move" || tool == "turn";
                 if (moved && opResult.ContainsKey("collided") && (bool)opResult["collided"])
                 {
-                    LogStep(retries + (engine.RetryCount > retries ? 1 : 0), CurrentPose(), CurrentHeading(),
-                        robot.HeldObject != null, "collision", "{}",
-                        new Dictionary<string, object> { { "collided", true } }, null, true);
+                    Vector2 cPose = CurrentPose();
+                    Dictionary<string, object> collisionInfo = new Dictionary<string, object>
+                    {
+                        { "collided", true },
+                        { "x", (float)cPose.x },
+                        { "y", (float)cPose.y },
+                        { "heading", CurrentHeading() },
+                    };
+                    LogStep(retries + (engine.RetryCount > retries ? 1 : 0), cPose, CurrentHeading(),
+                        robot.HeldObject != null, "collision", "{}", collisionInfo, null, true);
                 }
 
                 attachImage = moved;
@@ -374,7 +385,7 @@ namespace RobotEngine.Sim
                 {
                     foreach (Blob blob in blobs)
                     {
-                        if (blob.Colour == "magenta")
+                        if (blob.Colour == "cyan")
                         {
                             continue;
                         }
@@ -465,7 +476,7 @@ namespace RobotEngine.Sim
                 Blob tallest = null;
                 foreach (Blob blob in blobs)
                 {
-                    if (blob.Colour == "magenta")
+                    if (blob.Colour == "cyan")
                     {
                         continue;
                     }
@@ -581,12 +592,13 @@ namespace RobotEngine.Sim
                 return;
             }
 
-            // 0.7 m camera depth == ~0.45 m face distance == within reach once closed.
-            if (!float.IsNaN(lastDepth) && lastDepth <= 0.7f)
+            // 0.9 m camera depth: close in and press until the bump-grab lands
+            // (matches the proven Python policy dynamics).
+            if (!float.IsNaN(lastDepth) && lastDepth <= 0.9f)
             {
                 pending = "pickup";
                 tool = "move";
-                value = 0.2f;
+                value = 0.25f;
                 note += " | in pickup range, closing";
                 return;
             }
@@ -612,7 +624,7 @@ namespace RobotEngine.Sim
             {
                 foreach (Blob blob in blobs)
                 {
-                    if (blob.Colour == "magenta")
+                    if (blob.Colour == "cyan")
                     {
                         zone = blob;
                         break;
@@ -628,6 +640,10 @@ namespace RobotEngine.Sim
             if (zone != null)
             {
                 float offset = OffsetDegrees(zone.Cx);
+                float zoneDistance = 1.25f * 320f / Mathf.Max(1f, zone.W);
+                blindBudget = Mathf.Max(0f, zoneDistance - 0.9f);
+                blindSteps = 0;
+
                 if (Mathf.Abs(offset) > 14f)
                 {
                     tool = "turn";
@@ -636,8 +652,7 @@ namespace RobotEngine.Sim
                     return;
                 }
 
-                float zoneDistance = 1.25f * 320f / Mathf.Max(1f, zone.W);
-                if (zone.W >= 420 || zoneDistance <= 0.85f)
+                if (zone.W >= 420 || zoneDistance <= 0.9f)
                 {
                     pending = "drop";
                     tool = "move";
@@ -647,25 +662,48 @@ namespace RobotEngine.Sim
                 }
 
                 tool = "move";
-                value = Mathf.Clamp(zoneDistance - 0.8f, 0.3f, 0.7f);
+                value = Mathf.Clamp(zoneDistance - 0.9f, 0.3f, 0.7f);
                 note = "carrying to zone";
                 return;
             }
 
+            // The carried payload occludes the zone between ~1-2.5 m. Drive blind on the
+            // remembered bearing for the remaining budget; once it is spent, drop anyway
+            // (drop reports the truth) or sweep to re-acquire if retries remain.
             if (zoneBearing >= 0f)
             {
-                float delta = Mathf.Repeat(zoneBearing - s.Heading + 540f, 360f) - 180f;
-                if (Mathf.Abs(delta) > 15f)
+                if (blindBudget > 0f)
                 {
-                    tool = "turn";
-                    value = Mathf.Round(delta * 10f) / 10f;
-                    note = "turning toward remembered zone";
+                    blindBudget -= 0.5f;
+                    blindSteps += 1;
+                    float delta = Mathf.Repeat(zoneBearing - s.Heading + 540f, 360f) - 180f;
+                    if (Mathf.Abs(delta) > 15f)
+                    {
+                        tool = "turn";
+                        value = Mathf.Round(delta * 10f) / 10f;
+                        note = "turning toward remembered zone";
+                        return;
+                    }
+
+                    tool = "move";
+                    value = Mathf.Min(0.5f, blindBudget + 0.5f);
+                    note = "carrying blind past the payload";
                     return;
                 }
 
-                tool = "move";
-                value = 0.8f;
-                note = "driving toward remembered zone";
+                if (dropTries < 1)
+                {
+                    pending = "drop";
+                    tool = "move";
+                    value = 0.2f;
+                    note = "blind budget spent - dropping next";
+                    return;
+                }
+
+                scanTurned += 45f;
+                tool = "turn";
+                value = 45f;
+                note = "zone missed; sweeping to re-acquire";
                 return;
             }
 
@@ -712,7 +750,7 @@ namespace RobotEngine.Sim
 
         private bool Matches(Blob blob, float heading)
         {
-            if (blob.Colour == "magenta")
+            if (blob.Colour == "cyan")
             {
                 return false;
             }
@@ -780,7 +818,7 @@ namespace RobotEngine.Sim
             foreach (Blob blob in blobs)
             {
                 float bearing = BearingOf(heading, blob.Cx);
-                if (blob.Colour == "magenta")
+                if (blob.Colour == "cyan")
                 {
                     zoneBearing = bearing;
                 }

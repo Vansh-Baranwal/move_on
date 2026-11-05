@@ -127,7 +127,10 @@ namespace RobotEngine.Views
             camera.aspect = AspectRatio;
             camera.nearClipPlane = 0.03f;
             camera.farClipPlane = 30f;
-            camera.clearFlags = CameraClearFlags.Skybox;
+            // Solid moody backdrop: the default sky is saturated blue, which the
+            // vision layer would read as one giant blue blob.
+            camera.clearFlags = CameraClearFlags.SolidColor;
+            camera.backgroundColor = new Color(0.13f, 0.11f, 0.18f);
         }
 
         private void SaveDebugFrame()

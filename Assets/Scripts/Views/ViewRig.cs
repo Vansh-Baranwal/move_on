@@ -72,7 +72,8 @@ namespace RobotEngine.Views
             displayCamera.fieldOfView = FppFieldOfView;
             displayCamera.nearClipPlane = 0.03f;
             displayCamera.farClipPlane = 40f;
-            displayCamera.clearFlags = CameraClearFlags.Skybox;
+            displayCamera.clearFlags = CameraClearFlags.SolidColor;
+            displayCamera.backgroundColor = new Color(0.13f, 0.11f, 0.18f);
             displayCamera.depth = 0f;
 
             minimapTexture = new RenderTexture(256, 256, 24, RenderTextureFormat.ARGB32)

@@ -131,7 +131,7 @@ class LocalProvider:
                     note + f" | target spotted, bearing {self.target_bearing:.0f}"
             if self.target["mode"] == "tallest":
                 for blob in frame:
-                    if blob["colour"] == "magenta":
+                    if blob["colour"] == "cyan":
                         continue
                     bearing = (state["heading"] + offset_degrees(blob["cx"])) % 360.0
                     if not any(abs((bearing - seen) % 360) < 25 for seen in self.measure_queue):
@@ -240,7 +240,7 @@ class LocalProvider:
         frame = analyse_frame(jpeg) if jpeg is not None else None
         zone = None
         if frame is not None:
-            zone = next((blob for blob in frame if blob["colour"] == "magenta"), None)
+            zone = next((blob for blob in frame if blob["colour"] == "cyan"), None)
             if zone is not None:
                 self.zone_bearing = (state["heading"] + offset_degrees(zone["cx"])) % 360.0
 
@@ -266,7 +266,7 @@ class LocalProvider:
 
     def _matches(self, blob: dict, heading: float) -> bool:
         """Colour + blacklist only - shape is advisory (JPEG smears small blobs)."""
-        if blob["colour"] == "magenta":
+        if blob["colour"] == "cyan":
             return False
         if self.target["colour"] and blob["colour"] != self.target["colour"]:
             return False
@@ -296,7 +296,7 @@ class LocalProvider:
     def _remember(self, frame: list[dict], state: dict) -> None:
         for blob in frame:
             bearing = (state["heading"] + offset_degrees(blob["cx"])) % 360.0
-            if blob["colour"] == "magenta":
+            if blob["colour"] == "cyan":
                 self.zone_bearing = bearing
             elif self._matches(blob, state["heading"]):
                 self.seen_targets = [(b, a) for (b, a) in self.seen_targets

@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Globalization;
 using UnityEngine;
 using RobotEngine.Sim;
 
@@ -29,10 +30,18 @@ namespace RobotEngine.World
             System.Random random = new System.Random(seed == 0 ? 20261104 : seed);
 
             Transform root = transform;
-            Material floorMaterial = CreateMaterial("Floor", new Color(0.35f, 0.35f, 0.35f));
-            Material wallMaterial = CreateMaterial("Wall", new Color(0.48f, 0.48f, 0.48f));
-            Material dropZoneMaterial = CreateUnlitMaterial("DropZone", new Color(1f, 0f, 0.8f));
-            Material borderMaterial = CreateUnlitMaterial("DropZoneBorder", new Color(0.08f, 0.08f, 0.08f));
+            // Halloween palette: deep plum walls, near-black trim, deep orange accents.
+            // Every hue sits between the vision detector bands (orange ~21 deg, purple ~269 deg).
+            Material floorMaterial = CreateMaterial("Floor", new Color(0.34f, 0.30f, 0.40f));
+            Material wallMaterial = CreateMaterial("Wall", new Color(0.40f, 0.24f, 0.48f));
+            Material wallUpperMaterial = CreateMaterial("WallUpper", new Color(0.42f, 0.28f, 0.50f));
+            Material wainscotMaterial = CreateMaterial("Wainscot", new Color(0.15f, 0.12f, 0.20f));
+            Material trimMaterial = CreateMaterial("TrimBlack", new Color(0.07f, 0.06f, 0.08f));
+            Material orangeMaterial = CreateMaterial("OrangeAccent", new Color(1.0f, 0.45f, 0.0f));
+            Material violetMaterial = CreateMaterial("VioletInset", new Color(0.42f, 0.30f, 0.55f));
+            Material paneMaterial = CreateMaterial("PaneBlack", new Color(0.04f, 0.03f, 0.06f));
+            Material dropZoneMaterial = CreateUnlitMaterial("DropZone", new Color(0.0f, 0.9f, 1.0f));
+            Material borderMaterial = CreateUnlitMaterial("DropZoneBorder", orangeMaterial.color);
 
             Material floorTextured = new Material(floorMaterial);
             floorTextured.mainTexture = MakeFloorTexture();
@@ -90,8 +99,11 @@ namespace RobotEngine.World
                 new Vector3(0.08f, 0.04f, DropZoneSize), borderMaterial, root));
             SceneRegistry.SetDropZone(new Vector3(plan.ZoneCenter.x, 0f, plan.ZoneCenter.y), DropZoneSize);
 
+            BuildWallDecor(root, wallUpperMaterial, wainscotMaterial, trimMaterial,
+                orangeMaterial, violetMaterial, paneMaterial);
+
             RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Flat;
-            RenderSettings.ambientLight = new Color(0.42f, 0.42f, 0.42f);
+            RenderSettings.ambientLight = new Color(0.39f, 0.37f, 0.42f);
             RenderSettings.ambientIntensity = 1f;
             GameObject lightObject = new GameObject("WorldLight");
             lightObject.transform.SetParent(root);
@@ -122,6 +134,108 @@ namespace RobotEngine.World
             }
 
             Build(seed);
+        }
+
+        /// <summary>
+        /// Halloween wall design: wainscot with framed panels, orange chair rail, pilasters,
+        /// crown molding, framed portraits and tall spooky windows. Geometry only - mounted
+        /// on the walls, nothing joins the fetchable scene, every hue sits between the
+        /// vision detector bands.
+        /// </summary>
+        private void BuildWallDecor(Transform root, Material wallUpper, Material wainscot,
+            Material trim, Material orange, Material violet, Material pane)
+        {
+            float inner = RoomSize / 2f - WallThickness / 2f;
+
+            CreateDecor("UpperNorth", new Vector3(0f, 1.05f + (WallHeight - 1.05f) / 2f, inner + 0.006f),
+                new Vector3(RoomSize - 0.02f, WallHeight - 1.05f, 0.01f), wallUpper, root);
+            CreateDecor("UpperSouth", new Vector3(0f, 1.05f + (WallHeight - 1.05f) / 2f, -inner - 0.006f),
+                new Vector3(RoomSize - 0.02f, WallHeight - 1.05f, 0.01f), wallUpper, root);
+            CreateDecor("UpperEast", new Vector3(inner + 0.006f, 1.05f + (WallHeight - 1.05f) / 2f, 0f),
+                new Vector3(0.01f, WallHeight - 1.05f, RoomSize - 0.02f), wallUpper, root);
+            CreateDecor("UpperWest", new Vector3(-inner - 0.006f, 1.05f + (WallHeight - 1.05f) / 2f, 0f),
+                new Vector3(0.01f, WallHeight - 1.05f, RoomSize - 0.02f), wallUpper, root);
+
+            foreach (int side in new[] { 0, 1, 2, 3 })
+            {
+                bool alongX = side < 2;
+                float sign = side == 0 || side == 2 ? 1f : -1f;
+
+                // Wainscot band + orange chair rail.
+                CreateWallPiece(side, alongX, sign, 0f, 0.5f, RoomSize - 0.02f, 1.0f, 0.03f, wainscot, root);
+                CreateWallPiece(side, alongX, sign, 0f, 1.02f, RoomSize - 0.02f, 0.05f, 0.035f, orange, root);
+
+                // Crown molding.
+                CreateWallPiece(side, alongX, sign, 0f, 2.32f, RoomSize - 0.02f, 0.08f, 0.05f, trim, root);
+
+                // Pilasters at both ends and the middle.
+                foreach (float offset in new[] { -4.3f, 0f, 4.3f })
+                {
+                    CreateWallPiece(side, alongX, sign, offset, 1.25f, 0.18f, 2.5f, 0.05f, trim, root);
+                    CreateWallPiece(side, alongX, sign, offset, 0.08f, 0.24f, 0.16f, 0.06f, orange, root);
+                }
+
+                // Wainscot panel frames.
+                foreach (float offset in new[] { -2.9f, -1.05f, 1.05f, 2.9f })
+                {
+                    FrameDecor(side, alongX, sign, offset, 0.5f, 1.4f, 0.7f, 0.05f, trim, root);
+                }
+
+                // Portraits (violet + orange) and a tall pane window on the upper wall.
+                CreateWallPiece(side, alongX, sign, -2.0f, 1.72f, 1.0f, 1.24f, 0.02f, trim, root);
+                CreateWallPiece(side, alongX, sign, -2.0f, 1.72f, 0.86f, 1.1f, 0.035f, violet, root);
+                CreateWallPiece(side, alongX, sign, 2.0f, 1.72f, 1.0f, 1.24f, 0.02f, trim, root);
+                CreateWallPiece(side, alongX, sign, 2.0f, 1.72f, 0.86f, 1.1f, 0.035f, orange, root);
+                CreateWallPiece(side, alongX, sign, 0f, 1.78f, 0.78f, 1.5f, 0.02f, trim, root);
+                CreateWallPiece(side, alongX, sign, 0f, 1.78f, 0.64f, 1.36f, 0.035f, pane, root);
+                CreateWallPiece(side, alongX, sign, 0f, 1.78f, 0.06f, 1.36f, 0.05f, orange, root);
+                CreateWallPiece(side, alongX, sign, 0f, 1.78f, 0.64f, 0.06f, 0.05f, orange, root);
+            }
+        }
+
+        private void CreateWallPiece(int side, bool alongX, float sign, float offset, float height,
+            float length, float tall, float depth, Material material, Transform root)
+        {
+            float inner = RoomSize / 2f - WallThickness / 2f - depth / 2f - 0.004f;
+            Vector3 position;
+            Vector3 scale;
+            if (alongX)
+            {
+                position = new Vector3(offset, height, sign * inner);
+                scale = new Vector3(length, tall, depth);
+            }
+            else
+            {
+                position = new Vector3(sign * inner, height, offset);
+                scale = new Vector3(depth, tall, length);
+            }
+
+            string name = "WallDecor_" + side + "_" + offset.ToString("0.0", CultureInfo.InvariantCulture) +
+                "_" + height.ToString("0.00", CultureInfo.InvariantCulture);
+            StripCollider(CreateDecor(name, position, scale, material, root));
+        }
+
+        private void FrameDecor(int side, bool alongX, float sign, float offset, float height,
+            float width, float tall, float depth, Material material, Transform root)
+        {
+            // Four thin strips forming a raised frame.
+            float bar = 0.05f;
+            CreateWallPiece(side, alongX, sign, offset, height + tall / 2f - bar / 2f, width, bar, depth + 0.012f, material, root);
+            CreateWallPiece(side, alongX, sign, offset, height - tall / 2f + bar / 2f, width, bar, depth + 0.012f, material, root);
+            CreateWallPiece(side, alongX, sign, offset - width / 2f + bar / 2f, height, bar, tall, depth + 0.012f, material, root);
+            CreateWallPiece(side, alongX, sign, offset + width / 2f - bar / 2f, height, bar, tall, depth + 0.012f, material, root);
+        }
+
+        private static GameObject CreateDecor(string objectName, Vector3 position, Vector3 scale,
+            Material material, Transform parent)
+        {
+            GameObject created = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            created.name = objectName;
+            created.transform.SetParent(parent);
+            created.transform.SetPositionAndRotation(position, Quaternion.identity);
+            created.transform.localScale = scale;
+            created.GetComponent<Renderer>().sharedMaterial = material;
+            return created;
         }
 
         private LayoutPlan GeneratePlan(System.Random random)
@@ -311,8 +425,8 @@ namespace RobotEngine.World
                 wrapMode = TextureWrapMode.Repeat
             };
             System.Random random = new System.Random(7);
-            Color baseColour = new Color(0.56f, 0.56f, 0.57f);
-            Color seam = new Color(0.34f, 0.34f, 0.35f);
+            Color baseColour = new Color(0.36f, 0.34f, 0.42f);
+            Color seam = new Color(0.16f, 0.15f, 0.22f);
             for (int y = 0; y < size; y++)
             {
                 for (int x = 0; x < size; x++)
