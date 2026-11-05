@@ -317,7 +317,7 @@ namespace RobotEngine.World
                     new LayoutValidator.LayoutObject(new Vector2(1.7f, -1.3f), 0.6f, "cube"),
                     new LayoutValidator.LayoutObject(new Vector2(-1.5f, 1.5f), 0.3f, "sphere"),
                     new LayoutValidator.LayoutObject(new Vector2(0f, -0.1f), 0.8f, "cylinder"),
-                    new LayoutValidator.LayoutObject(new Vector2(2.8f, 0.2f), 0.2f, "cone"),
+                    new LayoutValidator.LayoutObject(new Vector2(2.8f, 0.2f), 0.55f, "cone"),
                 },
                 new[] { "red", "blue", "red", "yellow", "green" },
                 new Vector2(3.1f, -3.1f));

@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-"""Membrane robot agent: LLM tool-use loop over the Unity engine HTTP API.
+"""Membrane robot agent: Claude tool-use loop over the Unity engine HTTP API.
 
-Runs on Groq by default (OpenAI-compatible); switch back to Claude with
---provider claude. Usage:
+Usage:
 
     python agent/main.py --command "Bring the round red thing."
-    python agent/main.py --provider claude --command "Bring the round red thing."
     python agent/main.py --dummy            # exercises every endpoint, no API cost
 
 Per run it writes logs/<run_id>/log.jsonl with one line per step (step, timestamp,
@@ -225,8 +223,6 @@ def run_dummy(engine: EngineClient, logger: RunLogger):
 def main() -> int:
     parser = argparse.ArgumentParser(description="Membrane robot fetch agent")
     parser.add_argument("--command", help='Plain-language command, e.g. "Bring the round red thing."')
-    parser.add_argument("--provider", choices=("local", "claude"), default="local",
-                        help="Brain: local pixel-analysis policy (no API) or Claude")
     parser.add_argument("--model", default=None, help="Override the provider's default model")
     parser.add_argument("--max-steps", type=int, default=25, help="Soft target 25; hard stop 60.")
     parser.add_argument("--base-url", default="http://localhost:8080")
@@ -238,7 +234,7 @@ def main() -> int:
     if not args.dummy and not args.command:
         parser.error("--command is required unless --dummy is used")
     max_steps = min(max(1, args.max_steps), MAX_STEPS_HARD)
-    model = args.model or default_model(args.provider)
+    model = args.model or default_model()
 
     engine = EngineClient(args.base_url)
     engine.wait_ready()
@@ -247,7 +243,7 @@ def main() -> int:
     run_dir.mkdir(parents=True, exist_ok=True)
     logger = RunLogger(run_dir)
     print(f"Run directory: {run_dir}")
-    print(f"Provider: {args.provider}  model: {model}")
+    print(f"Provider: Claude  model: {model}")
 
     command = args.command or "(dummy run)"
     engine.reset()
@@ -259,8 +255,8 @@ def main() -> int:
         if args.dummy:
             outcome, reason, totals = run_dummy(engine, logger)
         else:
-            check_api_key(args.provider)
-            provider = create_provider(args.provider, model, command=command)
+            check_api_key()
+            provider = create_provider(model)
             outcome, reason, totals = run_llm(engine, logger, command, provider, max_steps)
     finally:
         if not args.no_record:
@@ -275,7 +271,7 @@ def main() -> int:
         "outcome": outcome,
         "reason": reason,
         "steps": steps,
-        "provider": args.provider,
+        "provider": "claude",
         "model": None if args.dummy else model,
         "finished_utc": datetime.now(timezone.utc).isoformat(),
     }, indent=2) + "\n", encoding="utf-8")

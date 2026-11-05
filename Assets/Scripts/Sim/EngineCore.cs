@@ -260,7 +260,7 @@ namespace RobotEngine.Sim
             recordingStartedAt = Time.time;
             activeCommand = command;
             engineState = "Idle";
-            ResetWorld();
+            retries = 0;
             brainActive = true;
 
             brain = gameObject.AddComponent<InternalBrain>();

@@ -56,6 +56,7 @@ namespace RobotEngine.Sim
         private float bestBearing;
         private float blindBudget;
         private int blindSteps;
+        private bool seenZoneClose;
         private float lastDepth = float.NaN;
         private bool attachImage = true;
 
@@ -81,6 +82,7 @@ namespace RobotEngine.Sim
             Outcome = "";
             blindBudget = 0f;
             blindSteps = 0;
+            seenZoneClose = false;
             targetColour = null;
             targetShape = null;
             mode = "colour";
@@ -211,6 +213,19 @@ namespace RobotEngine.Sim
                     phase = "return";
                 }
 
+                if (lastResult.ContainsKey("in_zone") && !(bool)lastResult["in_zone"] && !holding)
+                {
+                    // The drop released the object right at the hold point - it is
+                    // within reach. Grab it back and carry again with a fresh look.
+                    phase = "return";
+                    yield return engine.ExecuteOp("pickup", 0f, result =>
+                    {
+                        lastResult = result;
+                        LogStep(retries, pose, heading, holding, "pickup", "{}", result, null, false);
+                    });
+                    continue;
+                }
+
                 byte[] framePng = null;
                 List<Blob> blobs = null;
                 string note = "no new frame";
@@ -287,7 +302,8 @@ namespace RobotEngine.Sim
                         robot.HeldObject != null, "collision", "{}", collisionInfo, null, true);
                 }
 
-                attachImage = moved;
+                // Engine-internal policy: analyse every step (no LLM image budget).
+                attachImage = true;
             }
 
             if (Cancelled)
@@ -643,6 +659,10 @@ namespace RobotEngine.Sim
                 float zoneDistance = 1.25f * 320f / Mathf.Max(1f, zone.W);
                 blindBudget = Mathf.Max(0f, zoneDistance - 0.9f);
                 blindSteps = 0;
+                if (zoneDistance <= 1.4f || zone.W >= 300)
+                {
+                    seenZoneClose = true;
+                }
 
                 if (Mathf.Abs(offset) > 14f)
                 {
@@ -691,7 +711,7 @@ namespace RobotEngine.Sim
                     return;
                 }
 
-                if (dropTries < 1)
+                if (seenZoneClose && dropTries < 1)
                 {
                     pending = "drop";
                     tool = "move";

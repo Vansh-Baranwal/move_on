@@ -5,11 +5,7 @@ Robot Hackathon track: type a plain-language command, the model finds the object
 from camera pixels alone, drives the wheeled robot to it, picks it up, carries it
 to the drop zone and releases it.
 
-**Brain: local pixel-analysis policy by default (no API, no rate limits) —
-it detects objects from /look frames with colour-blob analysis, verifies
-identity with the depth sensor, and completed the full fetch cycle in live
-runs. Claude/Sonnet stays behind `--provider claude` as the reasoning brain
-for commands that need navigation around obstacles — see "LLM provider".**
+**Brain: Claude (Sonnet) only — paste `ANTHROPIC_API_KEY` into `.env`.**
 
 ## Quick start
 
@@ -26,11 +22,8 @@ pip install -r requirements.txt
 # 3. Plumbing test — zero API cost, touches every endpoint:
 python agent/main.py --dummy
 
-# 4. Real run - the local vision policy needs no API key at all:
+# 4. Real run - Claude (ANTHROPIC_API_KEY in .env):
 python agent/main.py --command "Bring the round red thing."
-
-#    Or hand the brain to Claude (ANTHROPIC_API_KEY required):
-python agent/main.py --provider claude --command "Bring the round red thing."
 
 # 5. Phase 2 clip from the recorded POV frames (MP4 720p, 10–20 s, command overlay):
 python tools/make_clip.py logs/<run_dir>
@@ -40,16 +33,11 @@ python tools/make_clip.py logs/<run_dir>
 
 | Provider | Command | API key env var | Default model |
 |---|---|---|---|
-| Gemini (default) | `--provider gemini` | `GEMINI_API_KEY` | `gemini-3.5-flash` 
-| Groq | `--provider groq` | `GROQ_API_KEY` | `meta-llama/llama-4-scout-17b-16e-instruct` (no vision models on Groq right now) |
-| Claude | `--provider claude` | `ANTHROPIC_API_KEY` | `claude-sonnet-5-5` |
+| Claude | `python agent/main.py` | `ANTHROPIC_API_KEY` | `claude-sonnet-5-5` |
 
-- Override the model with `--model` or `GEMINI_MODEL` / `GROQ_MODEL` / `ANTHROPIC_MODEL`.
-- Gemini + Groq speak the OpenAI-compatible protocol; the provider class is
-  shared, so any OpenAI-shaped endpoint can be added in three lines.
-- Both providers share the same loop, prompt, tools and logging; the switch is
-  one flag. The agent sends the newest camera image each decision and keeps the
-  history text-only (one line per earlier step) on either backend.
+- Override the model with `--model` or `ANTHROPIC_MODEL`.
+- The agent sends the newest camera image each decision and keeps the history
+  text-only (one line per earlier step).
 
 Every run writes `logs/<run_dir>/` with `log.jsonl` (one line per step: step,
 timestamp, tool, args, result, frame_path, token usage), `frames/step_NNNN.png`
@@ -74,7 +62,7 @@ command, outcome and step count.
             ▲ HTTP (localhost:8080)                    │ frames/state
             └──────────────┬───────────────────────────┘
 ┌───────────────────────── Python agent (agent/) ───────────────────────────────┐
-│  main.py           LLM tool-use loop (Groq default, Claude optional): one     │
+│  main.py           Claude tool-use loop: one                                   │
 │                    call per step, image after every move/turn, history as     │
 │                    one line per earlier step, prompt caching on Claude        │
 │  prompts.py        system prompt + tool schemas (leakage-audited)             │
@@ -119,7 +107,7 @@ One image per decision (sent as an image content block, never a text description
 earlier images replaced by a one-line note, 25-step soft budget (`--max-steps`,
 hard cap 60). Token totals are printed per run and stored in `meta.json`. Use
 `--dummy` while iterating on HTTP plumbing. On Claude the system prompt is sent
-with `cache_control: ephemeral`; Groq caches prompts server-side.
+with `cache_control: ephemeral`.
 
 ## Judging map
 

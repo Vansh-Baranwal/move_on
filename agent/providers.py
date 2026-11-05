@@ -1,14 +1,4 @@
-"""LLM providers for the fetch agent.
-
-Both providers speak the same protocol: the agent feeds each step's observation
-(state line + optional JPEG frame) and gets back exactly one tool call, then
-reports the tool result. Switching brains is a --provider flag, nothing else.
-
-- LocalProvider (default): on-device pixel-analysis policy. No API, no rate
-  limits - verifies the full pipeline and doubles as a fallback brain.
-- ClaudeProvider: Anthropic Messages API with prompt caching, for when the
-  team shifts back to Sonnet.
-"""
+"""Claude provider for the fetch agent."""
 
 from __future__ import annotations
 
@@ -19,36 +9,24 @@ from prompts import SYSTEM_PROMPT, TOOLS
 
 CLAUDE_DEFAULT_MODEL = "claude-sonnet-5-5"
 
-PROVIDER_KEYS = {"local": None, "claude": "ANTHROPIC_API_KEY"}
-
 # The system prompt carries no object data (see prompts.py leakage audit); it is
-# static per run, so providers may cache it freely.
+# static per run, so Claude may cache it freely.
 SYSTEM_TEXT = SYSTEM_PROMPT
 
 
-def create_provider(provider: str, model: str | None, command: str | None = None):
-    if provider == "local":
-        from local_agent import LocalProvider
-        return LocalProvider(command)
-    if provider == "claude":
-        return ClaudeProvider(model)
-    raise ValueError(f"unknown provider: {provider}")
+def create_provider(model: str | None):
+    return ClaudeProvider(model)
 
 
-def default_model(provider: str) -> str:
-    if provider == "local":
-        return "local-vision-policy"
+def default_model() -> str:
     return os.environ.get("ANTHROPIC_MODEL", CLAUDE_DEFAULT_MODEL)
 
 
-def check_api_key(provider: str) -> None:
-    needed = PROVIDER_KEYS[provider]
-    if needed and not os.environ.get(needed):
+def check_api_key() -> None:
+    if not os.environ.get("ANTHROPIC_API_KEY"):
         raise SystemExit(
-            f"{needed} is not set. Export it in this terminal first, e.g.:\n"
-            f"  PowerShell: $env:{needed}=\"...\"\n"
-            f"  Git Bash:   export {needed}=\"...\"\n"
-            f"  Permanent:  setx {needed} \"...\"  (then reopen the terminal)"
+            "ANTHROPIC_API_KEY is not set. Add your Claude API key to .env "
+            "or export it in this terminal."
         )
 
 
@@ -60,7 +38,7 @@ class ClaudeProvider:
             import anthropic
         except ImportError as error:  # pragma: no cover
             raise SystemExit("pip install anthropic") from error
-        self.model = model or default_model("claude")
+        self.model = model or default_model()
         self.client = anthropic.Anthropic()
         self.messages: list[dict] = []
         self.totals = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
