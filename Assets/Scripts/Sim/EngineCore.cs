@@ -114,7 +114,9 @@ namespace RobotEngine.Sim
 
         public string AgentResultMessage
         {
-            get { return claudeResultMessage.Length > 0 ? claudeResultMessage : brain != null ? brain.ResultMessage : ""; }
+            get { return claudeAgentActive || claudeSummaryReceived
+                ? claudeResultMessage
+                : brain != null ? brain.ResultMessage : ""; }
         }
 
         public InternalBrain Brain
@@ -175,6 +177,11 @@ namespace RobotEngine.Sim
             agentCamera = camera;
             povRecorder = recorder;
             viewRig = view;
+            brain = GetComponent<InternalBrain>();
+            if (brain == null)
+            {
+                brain = gameObject.AddComponent<InternalBrain>();
+            }
             startPose = CoordinateConverter.UnityToApiPosition(robot.transform.position);
             startHeading = CoordinateConverter.UnityYawToApiHeading(robot.transform.eulerAngles.y);
         }
@@ -280,7 +287,7 @@ namespace RobotEngine.Sim
             done(result);
         }
 
-        /// <summary>Starts the Claude tool-use agent for an in-scene command.</summary>
+        /// <summary>Runs understood commands with the built-in brain, consulting Claude only when clarification is needed.</summary>
         public bool StartRun(string command)
         {
             if (busy || BrainActive || string.IsNullOrWhiteSpace(command))
@@ -289,27 +296,53 @@ namespace RobotEngine.Sim
             }
 
             string projectRoot = Directory.GetParent(Application.dataPath).FullName;
-            string scriptPath = Path.Combine(projectRoot, "agent", "main.py");
             string stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fff", CultureInfo.InvariantCulture);
             string directory = Path.GetFullPath(Path.Combine(projectRoot, "runs", "platform_" + stamp));
+            activeCommand = command;
+            runDirectory = directory;
+            retries = 0;
+            engineState = "Idle";
+            brainActive = true;
+            claudeAgentActive = false;
+            claudeSummaryReceived = false;
+            claudeStep = 0;
+            claudeLastTool = "starting internal brain";
+            claudeOutcome = "";
+            claudeResultMessage = "";
+            claudeProcessError = "";
+            StartCoroutine(brain.Run(command, directory, this, agentCamera, robot, OnInternalBrainComplete));
+            return true;
+        }
+
+        private void OnInternalBrainComplete(string outcome)
+        {
+            brainActive = false;
+            if (outcome != "needs_clarification" || brain == null || brain.Cancelled)
+            {
+                return;
+            }
+
+            UnityEngine.Debug.Log("Internal brain needs clarification; asking Claude to interpret the command.");
+            StartClaudeFallback(activeCommand);
+        }
+
+        private void StartClaudeFallback(string command)
+        {
+            string projectRoot = Directory.GetParent(Application.dataPath).FullName;
+            string scriptPath = Path.Combine(projectRoot, "agent", "main.py");
             string python = Environment.GetEnvironmentVariable("ROBOT_PYTHON");
             if (string.IsNullOrWhiteSpace(python))
             {
                 python = "python";
             }
 
-            activeCommand = command;
-            runDirectory = directory;
-            retries = 0;
-            engineState = "Idle";
             claudeAgentActive = true;
             claudeSummaryReceived = false;
             claudeStep = 0;
-            claudeLastTool = "starting Claude";
+            claudeLastTool = "starting Claude fallback";
             claudeOutcome = "";
             claudeResultMessage = "";
             claudeProcessError = "";
-
             try
             {
                 if (!File.Exists(scriptPath))
@@ -317,13 +350,13 @@ namespace RobotEngine.Sim
                     throw new FileNotFoundException("Claude agent script was not found", scriptPath);
                 }
 
-                Directory.CreateDirectory(directory);
+                Directory.CreateDirectory(runDirectory);
                 System.Diagnostics.ProcessStartInfo startInfo = new System.Diagnostics.ProcessStartInfo
                 {
                     FileName = python,
                     Arguments = "-u " + QuoteProcessArgument(scriptPath) +
                         " --command " + QuoteProcessArgument(command) +
-                        " --preserve-pose --out " + QuoteProcessArgument(directory),
+                        " --preserve-pose --out " + QuoteProcessArgument(runDirectory),
                     WorkingDirectory = projectRoot,
                     UseShellExecute = false,
                     CreateNoWindow = true,
@@ -348,7 +381,6 @@ namespace RobotEngine.Sim
 
                 claudeProcess.BeginOutputReadLine();
                 claudeProcess.BeginErrorReadLine();
-                return true;
             }
             catch (Exception ex)
             {
@@ -363,7 +395,6 @@ namespace RobotEngine.Sim
                 claudeOutcome = "fail_not_reached";
                 claudeResultMessage = "Could not start Claude: " + ex.Message;
                 AddClaudeSummary(claudeOutcome, claudeResultMessage);
-                return true;
             }
         }
 
@@ -453,6 +484,7 @@ namespace RobotEngine.Sim
 
         private void AddClaudeSummary(string outcome, string message)
         {
+            claudeSummaryReceived = true;
             claudeOutcome = outcome;
             claudeResultMessage = message ?? "";
             Vector2 finalPose = CoordinateConverter.UnityToApiPosition(robot.transform.position);
@@ -1106,11 +1138,14 @@ namespace RobotEngine.Sim
 
         private void HandleRunStatus(ApiRequest request)
         {
+            string outcome = claudeAgentActive || claudeSummaryReceived
+                ? claudeOutcome
+                : brain != null ? brain.Outcome : "";
             RespondJson(request, 200, ApiJson.Obj(
                 ApiJson.Bool("active", BrainActive),
                 ApiJson.Int("step", AgentStep),
                 ApiJson.Str("tool", AgentLastTool),
-                ApiJson.Str("outcome", claudeOutcome),
+                ApiJson.Str("outcome", outcome),
                 ApiJson.Str("message", AgentResultMessage),
                 ApiJson.Str("voice", voiceText),
                 ApiJson.Bool("auto_run_voice", AutoRunVoice)));
