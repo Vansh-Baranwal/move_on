@@ -464,6 +464,22 @@ namespace RobotEngine.Robot
             }
         }
 
+        /// <summary>Returns how far the robot can safely travel along a direction.</summary>
+        public float GetTravelClearance(Vector3 direction, float distance)
+        {
+            if (distance <= 0f || direction.sqrMagnitude < 0.0001f)
+            {
+                return 0f;
+            }
+
+            float castDistance;
+            if (!CastBody(direction.normalized, distance, out castDistance))
+            {
+                return distance;
+            }
+
+            return Mathf.Max(0f, castDistance - CastSkin);
+        }
         private bool CastBody(Vector3 direction, float distance, out float castDistance)
         {
             Vector3 center = transform.position + new Vector3(0f, CastCenterHeight, 0f);

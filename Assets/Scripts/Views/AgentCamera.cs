@@ -118,6 +118,28 @@ namespace RobotEngine.Views
             return null;
         }
 
+        /// <summary>Projects a camera pixel into the scene and returns its first non-robot hit.</summary>
+        public bool TryGetWorldPointAt(float viewportX, float viewportY, out Vector3 point)
+        {
+            point = Vector3.zero;
+            Ray ray = agentCamera.ViewportPointToRay(new Vector3(
+                Mathf.Clamp01(viewportX), Mathf.Clamp01(viewportY), 0f));
+            RaycastHit[] hits = Physics.RaycastAll(ray, MaxDepth, Physics.DefaultRaycastLayers,
+                QueryTriggerInteraction.Ignore);
+            Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
+            for (int i = 0; i < hits.Length; i++)
+            {
+                if (hits[i].collider.transform.IsChildOf(robotRoot))
+                {
+                    continue;
+                }
+
+                point = hits[i].point;
+                return true;
+            }
+
+            return false;
+        }
         private static void ConfigureCamera(Camera camera, RenderTexture targetTexture)
         {
             camera.targetTexture = targetTexture;

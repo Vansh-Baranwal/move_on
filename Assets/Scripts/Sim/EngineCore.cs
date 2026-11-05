@@ -183,6 +183,7 @@ namespace RobotEngine.Sim
                         }
                         else
                         {
+                            retries = 0;
                             engineState = carrying ? "Carry" : "GoToObject";
                             RecordTrailPoint();
                         }
@@ -199,6 +200,7 @@ namespace RobotEngine.Sim
                     yield return StartCoroutine(robot.TurnRoutine(degrees, turned =>
                     {
                         povRecorder.SetMotion(false);
+                        retries = 0;
                         RecordTrailPoint();
                         result["turned"] = turned;
                     }));
@@ -595,6 +597,7 @@ namespace RobotEngine.Sim
             }
 
             replayActive = false;
+            VisualMemoryDatabase.Clear();
             // Always rebuild: seed 0 restores the curated layout after a seeded run.
             world.Rebuild(Mathf.Max(body.seed, 0));
 

@@ -20,6 +20,7 @@ namespace RobotEngine.Sim
     {
         private const float NearHeightPx = 140f;
         private const float RejectWindow = 10f;
+        private static readonly float[] AvoidanceAngles = { 0f, -20f, 20f, -40f, 40f, -60f, 60f, -90f, 90f, -120f, 120f, 180f };
 
         private struct BlobMatch
         {
@@ -39,7 +40,8 @@ namespace RobotEngine.Sim
         private string phase = "scan";
         private float scanTurned;
         private float collisionTurnSign = 1f;
-        private bool afterPivot;
+        private float failedBearing = -1f;
+        private int failedBearingSteps;
         private readonly List<float> rejectedBearings = new List<float>();
         private readonly List<KeyValuePair<float, float>> seenTargets = new List<KeyValuePair<float, float>>();
         private int fullSweeps;
@@ -57,6 +59,8 @@ namespace RobotEngine.Sim
         private float blindBudget;
         private int blindSteps;
         private bool seenZoneClose;
+        private Vector2 cachedTargetPosition;
+        private int cachedApproachSteps;
         private float lastDepth = float.NaN;
         private bool attachImage = true;
 
@@ -83,6 +87,8 @@ namespace RobotEngine.Sim
             blindBudget = 0f;
             blindSteps = 0;
             seenZoneClose = false;
+            cachedTargetPosition = Vector2.zero;
+            cachedApproachSteps = 0;
             targetColour = null;
             targetShape = null;
             mode = "colour";
@@ -136,6 +142,12 @@ namespace RobotEngine.Sim
                 mode = "tallest";
             }
 
+            if (mode != "tallest" && VisualMemoryDatabase.TryFindNearest(
+                CurrentPose(), targetColour, targetShape, out cachedTargetPosition))
+            {
+                phase = "cache";
+            }
+
             Directory.CreateDirectory(Path.Combine(runDirectory, "frames"));
             logPath = Path.Combine(runDirectory, "log.jsonl");
 
@@ -150,10 +162,10 @@ namespace RobotEngine.Sim
                 int retries = engine.RetryCount;
                 lastDepth = camera.CaptureDepth() ?? float.NaN;
 
-                if (retries >= 3)
+                if (retries >= 6)
                 {
                     outcome = "fail_collision";
-                    reason = "gave up after 3 collision retries";
+                    reason = "gave up after 6 consecutive collision retries";
                     LogStep(retries, pose, heading, holding, "finish",
                         "{\"outcome\":\"" + outcome + "\"}", new Dictionary<string, object>
                         {
@@ -165,6 +177,8 @@ namespace RobotEngine.Sim
                 if (retries > prevRetries)
                 {
                     collisionTurnSign *= -1f;
+                    failedBearing = CurrentHeading();
+                    failedBearingSteps = 4;
                     prevRetries = retries;
                     if (pending == "pickup")
                     {
@@ -182,17 +196,7 @@ namespace RobotEngine.Sim
                         continue;
                     }
 
-                    afterPivot = true;
-                    LogStep(retries, pose, heading, holding, "turn", "{\"degrees\":70}",
-                        new Dictionary<string, object>(), null, true);
-                    yield return engine.ExecuteOp("turn", 70f * collisionTurnSign, result => { });
-                    continue;
-                }
-
-                if (afterPivot)
-                {
-                    afterPivot = false;
-                    yield return engine.ExecuteOp("move", 0.5f, result => { });
+                    // Let the clearance planner pick a safe heading on the next step.
                     continue;
                 }
 
@@ -236,6 +240,7 @@ namespace RobotEngine.Sim
                     note = Describe(blobs);
                     framePng = EncodePng(pixels);
                     Remember(blobs, heading);
+                    VisualMemoryDatabase.Observe(blobs, camera);
                 }
 
                 string tool;
@@ -301,6 +306,14 @@ namespace RobotEngine.Sim
                     LogStep(retries + (engine.RetryCount > retries ? 1 : 0), cPose, CurrentHeading(),
                         robot.HeldObject != null, "collision", "{}", collisionInfo, null, true);
                 }
+                else if (moved)
+                {
+                    prevRetries = engine.RetryCount;
+                    if (tool == "move" && failedBearingSteps > 0)
+                    {
+                        failedBearingSteps--;
+                    }
+                }
 
                 // Engine-internal policy: analyse every step (no LLM image budget).
                 attachImage = true;
@@ -365,6 +378,22 @@ namespace RobotEngine.Sim
                 return;
             }
 
+            if (phase == "cache")
+            {
+                Blob cachedMatch = blobs != null ? BestMatch(blobs, s.Heading) : null;
+                if (cachedMatch != null)
+                {
+                    targetBearing = BearingOf(s.Heading, cachedMatch.Cx);
+                    phase = "approach";
+                    note += " | visual memory reacquired target";
+                    Approach(s, blobs, ref note, out tool, out value);
+                    return;
+                }
+
+                NavigateToCachedTarget(s, blobs, ref note, out tool, out value);
+                return;
+            }
+
             if (phase == "measure")
             {
                 Measure(s, blobs, ref note, out tool, out value);
@@ -378,6 +407,94 @@ namespace RobotEngine.Sim
             }
 
             Approach(s, blobs, ref note, out tool, out value);
+        }
+
+        private void MoveSafelyToward(float desiredBearing, float requestedDistance, ref string note,
+            out string tool, out float value)
+        {
+            requestedDistance = Mathf.Clamp(requestedDistance, 0.1f, 0.8f);
+            float bestScore = float.NegativeInfinity;
+            float bestBearing = desiredBearing;
+            float bestClearance = 0f;
+            Vector3 direction;
+            for (int i = 0; i < AvoidanceAngles.Length; i++)
+            {
+                float candidateBearing = Mathf.Repeat(desiredBearing + AvoidanceAngles[i], 360f);
+                float radians = candidateBearing * Mathf.Deg2Rad;
+                direction = new Vector3(Mathf.Cos(radians), 0f, -Mathf.Sin(radians));
+                if (failedBearingSteps > 0 &&
+                    Mathf.Abs(Mathf.DeltaAngle(failedBearing, candidateBearing)) < 25f)
+                {
+                    continue;
+                }
+
+                float clearance = robot.GetTravelClearance(direction, requestedDistance);
+                if (clearance < 0.08f)
+                {
+                    continue;
+                }
+
+                float alignment = Mathf.Cos(AvoidanceAngles[i] * Mathf.Deg2Rad);
+                float score = clearance + requestedDistance * 0.45f * alignment -
+                    Mathf.Abs(AvoidanceAngles[i]) * 0.001f;
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    bestBearing = candidateBearing;
+                    bestClearance = clearance;
+                }
+            }
+
+            if (bestScore == float.NegativeInfinity)
+            {
+                tool = "turn";
+                value = 45f * collisionTurnSign;
+                note += " | boxed in; turning to find a clear lane";
+                return;
+            }
+
+            float turn = Mathf.Repeat(bestBearing - CurrentHeading() + 540f, 360f) - 180f;
+            if (Mathf.Abs(turn) > 12f)
+            {
+                tool = "turn";
+                value = Mathf.Round(turn * 10f) / 10f;
+                if (Mathf.Abs(Mathf.DeltaAngle(desiredBearing, bestBearing)) > 12f)
+                {
+                    note += " | steering around an obstacle";
+                }
+
+                return;
+            }
+
+            tool = "move";
+            value = Mathf.Min(requestedDistance, Mathf.Max(0.08f, bestClearance - 0.03f));
+            if (Mathf.Abs(Mathf.DeltaAngle(desiredBearing, bestBearing)) > 12f)
+            {
+                note += " | moving through a clear lane";
+            }
+        }
+
+        private void NavigateToCachedTarget(BrainState s, List<Blob> blobs, ref string note,
+            out string tool, out float value)
+        {
+            cachedApproachSteps++;
+            Vector2 delta = cachedTargetPosition - s.Pose;
+            float distance = delta.magnitude;
+            if (distance <= 1.25f || cachedApproachSteps > 12)
+            {
+                phase = "scan";
+                scanTurned = 0f;
+                note += distance <= 1.25f
+                    ? " | reached remembered area; checking for target"
+                    : " | remembered route limit reached; resuming scan";
+                Scan(s, blobs, ref note, out tool, out value);
+                return;
+            }
+
+            float bearing = Mathf.Atan2(-delta.y, delta.x) * Mathf.Rad2Deg;
+            MoveSafelyToward(bearing, Mathf.Min(0.8f, Mathf.Max(0.25f, distance - 1f)),
+                ref note, out tool, out value);
+            note += " | navigating to remembered sighting";
         }
 
         private void Scan(BrainState s, List<Blob> blobs, ref string note, out string tool, out float value)
@@ -565,28 +682,14 @@ namespace RobotEngine.Sim
                     return;
                 }
 
-                float delta = Mathf.Repeat(targetBearing - s.Heading + 540f, 360f) - 180f;
-                if (Mathf.Abs(delta) > 15f)
-                {
-                    tool = "turn";
-                    value = Mathf.Round(delta * 10f) / 10f;
-                    note += " | reacquiring target";
-                    return;
-                }
-
-                tool = "move";
-                value = 0.5f;
-                note += " | driving on memory";
+                MoveSafelyToward(targetBearing, 0.5f, ref note, out tool, out value);
+                note += " | driving on remembered route";
                 return;
             }
 
             float offset = OffsetDegrees(blob.Cx);
             float height = blob.H;
-            if (s.Retries > 0)
-            {
-                offset += 30f * collisionTurnSign;
-            }
-
+            targetBearing = BearingOf(s.Heading, blob.Cx);
             if (height >= NearHeightPx && targetShape == "round" && !float.IsNaN(lastDepth) && lastDepth < 2.8f)
             {
                 float estimate = PhysicalHeight(height, lastDepth);
@@ -600,7 +703,7 @@ namespace RobotEngine.Sim
                 }
             }
 
-            if (Mathf.Abs(offset) > 14f)
+            if (Mathf.Abs(offset) > 14f && height >= NearHeightPx)
             {
                 tool = "turn";
                 value = Mathf.Round(offset * 10f) / 10f;
@@ -610,7 +713,7 @@ namespace RobotEngine.Sim
 
             // 0.9 m camera depth: close in and press until the bump-grab lands
             // (matches the proven Python policy dynamics).
-            if (!float.IsNaN(lastDepth) && lastDepth <= 0.9f)
+            if (Mathf.Abs(offset) <= 14f && !float.IsNaN(lastDepth) && lastDepth <= 0.9f)
             {
                 pending = "pickup";
                 tool = "move";
@@ -619,7 +722,7 @@ namespace RobotEngine.Sim
                 return;
             }
 
-            if (float.IsNaN(lastDepth) && height >= 200f)
+            if (Mathf.Abs(offset) <= 14f && float.IsNaN(lastDepth) && height >= 200f)
             {
                 pending = "pickup";
                 tool = "move";
@@ -628,8 +731,7 @@ namespace RobotEngine.Sim
                 return;
             }
 
-            tool = "move";
-            value = 0.8f;
+            MoveSafelyToward(targetBearing, 0.8f, ref note, out tool, out value);
             note += " | approaching";
         }
 
@@ -664,15 +766,7 @@ namespace RobotEngine.Sim
                     seenZoneClose = true;
                 }
 
-                if (Mathf.Abs(offset) > 14f)
-                {
-                    tool = "turn";
-                    value = Mathf.Round(offset * 10f) / 10f;
-                    note = "centring drop zone";
-                    return;
-                }
-
-                if (zone.W >= 420 || zoneDistance <= 0.9f)
+                if ((zone.W >= 420 || zoneDistance <= 0.9f) && Mathf.Abs(offset) <= 14f)
                 {
                     pending = "drop";
                     tool = "move";
@@ -681,9 +775,9 @@ namespace RobotEngine.Sim
                     return;
                 }
 
-                tool = "move";
-                value = Mathf.Clamp(zoneDistance - 0.9f, 0.3f, 0.7f);
-                note = "carrying to zone";
+                MoveSafelyToward(zoneBearing, Mathf.Clamp(zoneDistance - 0.9f, 0.3f, 0.7f),
+                    ref note, out tool, out value);
+                note = "carrying to zone" + note;
                 return;
             }
 
@@ -696,18 +790,9 @@ namespace RobotEngine.Sim
                 {
                     blindBudget -= 0.5f;
                     blindSteps += 1;
-                    float delta = Mathf.Repeat(zoneBearing - s.Heading + 540f, 360f) - 180f;
-                    if (Mathf.Abs(delta) > 15f)
-                    {
-                        tool = "turn";
-                        value = Mathf.Round(delta * 10f) / 10f;
-                        note = "turning toward remembered zone";
-                        return;
-                    }
-
-                    tool = "move";
-                    value = Mathf.Min(0.5f, blindBudget + 0.5f);
-                    note = "carrying blind past the payload";
+                    MoveSafelyToward(zoneBearing, Mathf.Min(0.5f, blindBudget + 0.5f),
+                        ref note, out tool, out value);
+                    note += " | carrying blind past the payload";
                     return;
                 }
 
