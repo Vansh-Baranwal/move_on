@@ -91,32 +91,7 @@ namespace RobotEngine.Views
 
         public static float GetEyeHeight(Transform robot)
         {
-            if (robot == null)
-            {
-                return NormalEyeHeight;
-            }
-
-            RobotController controller = robot.GetComponent<RobotController>();
-            Transform heldObject = controller != null ? controller.HeldObject : null;
-            if (heldObject == null)
-            {
-                return NormalEyeHeight;
-            }
-
-            Renderer[] renderers = heldObject.GetComponentsInChildren<Renderer>();
-            if (renderers.Length == 0)
-            {
-                return MinimumCarryingEyeHeight;
-            }
-
-            Bounds bounds = renderers[0].bounds;
-            for (int i = 1; i < renderers.Length; i++)
-            {
-                bounds.Encapsulate(renderers[i].bounds);
-            }
-
-            return Mathf.Max(MinimumCarryingEyeHeight,
-                bounds.max.y - robot.position.y + CarriedObjectClearance);
+            return MinimumCarryingEyeHeight;
         }
         /// <summary>Current camera frame as JPEG (640x480), Claude's only view of objects.</summary>
         public byte[] CaptureJpeg()

@@ -65,10 +65,6 @@ namespace RobotEngine.Sim
                 logOpen = !logOpen;
             }
 
-            if (Input.GetKeyDown(KeyCode.R))
-            {
-                ToggleReplay();
-            }
         }
 
         private void ToggleReplay()
@@ -226,7 +222,7 @@ namespace RobotEngine.Sim
             }
 
             if (GUI.Button(new Rect(area.x + 160f, area.y + 5f, 66f, 24f),
-                engine.ReplayActive ? "Replay" : "Replay (R)"))
+                "Replay"))
             {
                 ToggleReplay();
             }

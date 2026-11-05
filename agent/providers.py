@@ -74,18 +74,26 @@ class ClaudeProvider:
         for key in self.totals:
             self.totals[key] += step_usage[key]
 
-        tool_uses = [block for block in response.content if block.type == "tool_use"]
-        note = " ".join(getattr(block, "text", "") for block in response.content if block.type == "text").strip()
-        self.messages.append({"role": "assistant", "content": response.content})
-        if jpeg is not None and note:
-            self._image_notes[image_index] = note
+        # Filter out thinking blocks to avoid invalid signature errors on replay,
+        # and keep only one tool_use so every tool_use has a matching tool_result.
+        content_no_thinking = [b for b in response.content if b.type != "thinking"]
+        tool_uses = [b for b in content_no_thinking if b.type == "tool_use"]
+        text_blocks = [b for b in content_no_thinking if b.type == "text"]
+        note = " ".join(getattr(b, "text", "") for b in text_blocks).strip()
 
         if not tool_uses:
+            self.messages.append({"role": "assistant", "content": text_blocks or content_no_thinking})
+            if jpeg is not None and note:
+                self._image_notes[image_index] = note
             self.messages.append({"role": "user", "content": [{"type": "text", "text": "Reply with your SEE line and exactly one tool call."}]})
             return "none", {}, step_usage, note
 
         call = tool_uses[0]
         self._pending_id = call.id
+        stored_content = text_blocks + [call]
+        self.messages.append({"role": "assistant", "content": stored_content})
+        if jpeg is not None and note:
+            self._image_notes[image_index] = note
         return call.name, dict(call.input or {}), step_usage, note
 
     def report(self, result_json: str) -> None:
