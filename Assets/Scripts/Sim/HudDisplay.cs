@@ -25,6 +25,7 @@ namespace RobotEngine.Sim
         private readonly Dictionary<Color, Texture2D> colourCache = new Dictionary<Color, Texture2D>();
         private GUIStyle rowStyle;
         private GUIStyle headerStyle;
+        private GUIStyle resultStyle;
 
         private bool logOpen = true;
         private Vector2 logScroll;
@@ -105,6 +106,7 @@ namespace RobotEngine.Sim
             DrawMinimap();
             DrawLogPanel();
             DrawReplayPanel();
+            DrawResultPanel();
         }
 
         private void DrawRecordingOverlay()
@@ -147,10 +149,10 @@ namespace RobotEngine.Sim
             GUI.Box(new Rect(8f, 8f, PanelWidth + 60f, 34f), "");
             GUI.Label(new Rect(16f, 14f, PanelWidth + 44f, 22f), status);
 
-            if (engine.BrainActive && engine.Brain != null)
+            if (engine.BrainActive)
             {
                 GUI.Label(new Rect(16f, 40f, PanelWidth + 44f, 22f),
-                    string.Format("BRAIN step {0}: {1}   [STOP]", engine.Brain.Step, engine.Brain.LastTool));
+                    string.Format("{0} step {1}: {2}   [STOP]", engine.ClaudeAgentActive ? "CLAUDE" : "BRAIN", engine.AgentStep, engine.AgentLastTool));
                 if (GUI.Button(new Rect(PanelWidth + 30f, 38f, 60f, 22f), "STOP"))
                 {
                     engine.StopBrain();
@@ -158,6 +160,22 @@ namespace RobotEngine.Sim
             }
         }
 
+        private void DrawResultPanel()
+        {
+            if (engine.BrainActive || string.IsNullOrEmpty(engine.AgentResultMessage))
+            {
+                return;
+            }
+
+            float width = Mathf.Min(340f, Screen.width - 16f);
+            const float height = 96f;
+            float y = viewRig.Mode == ViewMode.ThirdPerson ? 242f : 104f;
+            y = Mathf.Min(y, Mathf.Max(8f, Screen.height - height - 8f));
+            Rect area = new Rect(Screen.width - width - 8f, y, width, height);
+            GUI.Box(area, "");
+            GUI.Label(new Rect(area.x + 10f, area.y + 8f, area.width - 20f, area.height - 16f),
+                "RESULT\n" + engine.AgentResultMessage, resultStyle);
+        }
         private void DrawCommandBox()
         {
             float width = 560f;
@@ -401,6 +419,17 @@ namespace RobotEngine.Sim
 
         private void EnsureStyles()
         {
+            if (resultStyle == null)
+            {
+                resultStyle = new GUIStyle(GUI.skin.label)
+                {
+                    fontSize = 14,
+                    alignment = TextAnchor.UpperLeft,
+                    wordWrap = true
+                };
+                resultStyle.normal.textColor = Color.white;
+            }
+
             if (headerStyle == null)
             {
                 headerStyle = new GUIStyle(GUI.skin.label)

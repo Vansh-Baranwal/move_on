@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using UnityEngine;
+using RobotEngine.Robot;
 
 namespace RobotEngine.Views
 {
@@ -16,6 +17,9 @@ namespace RobotEngine.Views
         private const float HorizontalFieldOfView = 90f;
         private const float AspectRatio = 4f / 3f;
         private const float MaxDepth = 10f;
+        private const float NormalEyeHeight = 0.5f;
+        private const float MinimumCarryingEyeHeight = 1.25f;
+        private const float CarriedObjectClearance = 0.3f;
         private Camera agentCamera;
         private RenderTexture renderTexture;
         private Transform robotRoot;
@@ -51,7 +55,7 @@ namespace RobotEngine.Views
         {
             robotRoot = robot;
             transform.SetParent(robot);
-            transform.localPosition = new Vector3(0f, 0.5f, 0.25f);
+            transform.localPosition = new Vector3(0f, NormalEyeHeight, 0.25f);
             transform.localRotation = Quaternion.Euler(10f, 0f, 0f);
 
             renderTexture = new RenderTexture(Width, Height, 24, RenderTextureFormat.ARGB32)
@@ -75,12 +79,45 @@ namespace RobotEngine.Views
 
         private void Update()
         {
+            Vector3 localPosition = transform.localPosition;
+            localPosition.y = GetEyeHeight(robotRoot);
+            transform.localPosition = localPosition;
+
             if (Input.GetKeyDown(KeyCode.F9))
             {
                 SaveDebugFrame();
             }
         }
 
+        public static float GetEyeHeight(Transform robot)
+        {
+            if (robot == null)
+            {
+                return NormalEyeHeight;
+            }
+
+            RobotController controller = robot.GetComponent<RobotController>();
+            Transform heldObject = controller != null ? controller.HeldObject : null;
+            if (heldObject == null)
+            {
+                return NormalEyeHeight;
+            }
+
+            Renderer[] renderers = heldObject.GetComponentsInChildren<Renderer>();
+            if (renderers.Length == 0)
+            {
+                return MinimumCarryingEyeHeight;
+            }
+
+            Bounds bounds = renderers[0].bounds;
+            for (int i = 1; i < renderers.Length; i++)
+            {
+                bounds.Encapsulate(renderers[i].bounds);
+            }
+
+            return Mathf.Max(MinimumCarryingEyeHeight,
+                bounds.max.y - robot.position.y + CarriedObjectClearance);
+        }
         /// <summary>Current camera frame as JPEG (640x480), Claude's only view of objects.</summary>
         public byte[] CaptureJpeg()
         {
@@ -121,7 +158,15 @@ namespace RobotEngine.Views
         /// <summary>Projects a camera pixel into the scene and returns its first non-robot hit.</summary>
         public bool TryGetWorldPointAt(float viewportX, float viewportY, out Vector3 point)
         {
+            Collider hitCollider;
+            return TryGetWorldPointAt(viewportX, viewportY, out point, out hitCollider);
+        }
+
+        public bool TryGetWorldPointAt(float viewportX, float viewportY, out Vector3 point,
+            out Collider hitCollider)
+        {
             point = Vector3.zero;
+            hitCollider = null;
             Ray ray = agentCamera.ViewportPointToRay(new Vector3(
                 Mathf.Clamp01(viewportX), Mathf.Clamp01(viewportY), 0f));
             RaycastHit[] hits = Physics.RaycastAll(ray, MaxDepth, Physics.DefaultRaycastLayers,
@@ -135,6 +180,7 @@ namespace RobotEngine.Views
                 }
 
                 point = hits[i].point;
+                hitCollider = hits[i].collider;
                 return true;
             }
 

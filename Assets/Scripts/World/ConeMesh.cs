@@ -32,11 +32,11 @@ namespace RobotEngine.World
                 int next = (i + 1) % sides;
                 int sideOffset = i * 6;
                 triangles[sideOffset] = i;
-                triangles[sideOffset + 1] = next;
-                triangles[sideOffset + 2] = apex;
+                triangles[sideOffset + 1] = apex;
+                triangles[sideOffset + 2] = next;
                 triangles[sideOffset + 3] = baseCenter;
-                triangles[sideOffset + 4] = next + sides;
-                triangles[sideOffset + 5] = i + sides;
+                triangles[sideOffset + 4] = i + sides;
+                triangles[sideOffset + 5] = next + sides;
             }
 
             mesh.vertices = vertices;

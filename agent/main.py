@@ -143,6 +143,12 @@ def run_llm(engine: EngineClient, logger: RunLogger, command: str, provider, max
             print(f"  step {logger.step}: (no tool call) SEE: {note[:120]}")
             logger.event("none", {}, {"error": "no tool call"}, frame_path=frame_path, usage=usage)
             push_step(engine, state, "none", {}, {"error": "no tool call"}, frame_path, note)
+            clarification = note.strip()
+            if clarification.startswith("SEE:"):
+                clarification = "\n".join(clarification.splitlines()[1:]).strip()
+            if clarification:
+                outcome, reason = "needs_clarification", clarification
+                break
             continue
 
         result, finished, moved = execute_tool(engine, tool_name, tool_args)
@@ -228,6 +234,7 @@ def main() -> int:
     parser.add_argument("--base-url", default="http://localhost:8080")
     parser.add_argument("--dummy", action="store_true", help="Scripted plumbing test, no API calls.")
     parser.add_argument("--no-record", action="store_true", help="Skip POV recording (logging only).")
+    parser.add_argument("--preserve-pose", action="store_true", help="Continue from the current robot pose instead of resetting.")
     parser.add_argument("--out", default=None, help="Run directory override (default logs/<timestamp>).")
     args = parser.parse_args()
 
@@ -246,7 +253,8 @@ def main() -> int:
     print(f"Provider: Claude  model: {model}")
 
     command = args.command or "(dummy run)"
-    engine.reset()
+    if not args.preserve_pose:
+        engine.reset()
     if not args.no_record:
         pov_dir = str((run_dir / "pov").resolve())
         engine.record_start(command, frames_dir=pov_dir)

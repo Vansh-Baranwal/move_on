@@ -25,6 +25,7 @@ namespace RobotEngine.Views
         }
 
         private Camera povCamera;
+        private Transform robotRoot;
         private RenderTexture renderTexture;
         private readonly ConcurrentQueue<FramePayload> writeQueue = new ConcurrentQueue<FramePayload>();
         private Thread writerThread;
@@ -49,6 +50,7 @@ namespace RobotEngine.Views
 
         public void Build(Transform robot)
         {
+            robotRoot = robot;
             transform.SetParent(robot);
             transform.localPosition = new Vector3(0f, 0.5f, 0.25f);
             transform.localRotation = Quaternion.Euler(10f, 0f, 0f);
@@ -132,6 +134,10 @@ namespace RobotEngine.Views
 
         private void Update()
         {
+            Vector3 localPosition = transform.localPosition;
+            localPosition.y = AgentCamera.GetEyeHeight(robotRoot);
+            transform.localPosition = localPosition;
+
             if (!sessionActive || !motionActive || Time.time < nextCapture)
             {
                 return;

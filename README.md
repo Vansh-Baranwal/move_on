@@ -5,7 +5,7 @@ Robot Hackathon track: type a plain-language command, the model finds the object
 from camera pixels alone, drives the wheeled robot to it, picks it up, carries it
 to the drop zone and releases it.
 
-**Brain: Claude (Sonnet) only — paste `ANTHROPIC_API_KEY` into `.env`.**
+**Brain: Claude (Sonnet) � Unity launches the Python Claude agent in the background when you press Run. Set `ANTHROPIC_API_KEY` in `.env`.**
 
 ## Quick start
 
@@ -13,9 +13,9 @@ to the drop zone and releases it.
 # 1. Python deps (agent + clip tooling)
 pip install -r requirements.txt
 
-# 2. Start the engine
+# 2. Set ANTHROPIC_API_KEY in .env, then start the engine
 #    Open this project in Unity, press Play (any scene — the engine self-bootstraps),
-#    and wait for "Robot engine API listening on http://localhost:8080/".
+#    and wait for "Robot engine API listening on http://localhost:8080/". The in-game Run button invokes Claude.
 #    Headless alternative:
 #    Unity.exe -batchmode -projectPath . -executeMethod RobotEngine.EditorTools.EngineServe.Run
 

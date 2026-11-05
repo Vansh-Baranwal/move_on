@@ -4,6 +4,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Text;
 using UnityEngine;
 using RobotEngine.Core;
 using RobotEngine.Robot;
@@ -55,6 +56,7 @@ namespace RobotEngine.Sim
         private string engineState = "Idle";
         private string activeCommand = "";
         private string runDirectory = "";
+        private string recordFramesDirectory = "";
         private int retries;
         private bool busy;
         private Vector2 startPose;
@@ -69,6 +71,15 @@ namespace RobotEngine.Sim
         private float recordingStartedAt = -1f;
         private InternalBrain brain;
         private bool brainActive;
+        private System.Diagnostics.Process claudeProcess;
+        private readonly ConcurrentQueue<string> claudeOutput = new ConcurrentQueue<string>();
+        private bool claudeAgentActive;
+        private bool claudeSummaryReceived;
+        private int claudeStep;
+        private string claudeLastTool = "";
+        private string claudeOutcome = "";
+        private string claudeResultMessage = "";
+        private string claudeProcessError = "";
         private string voiceText = "";
         private ViewRig viewRig;
 
@@ -83,7 +94,27 @@ namespace RobotEngine.Sim
 
         public bool BrainActive
         {
-            get { return brainActive; }
+            get { return brainActive || claudeAgentActive; }
+        }
+
+        public bool ClaudeAgentActive
+        {
+            get { return claudeAgentActive; }
+        }
+
+        public int AgentStep
+        {
+            get { return claudeAgentActive ? claudeStep : brain != null ? brain.Step : 0; }
+        }
+
+        public string AgentLastTool
+        {
+            get { return claudeAgentActive ? claudeLastTool : brain != null ? brain.LastTool : ""; }
+        }
+
+        public string AgentResultMessage
+        {
+            get { return claudeResultMessage.Length > 0 ? claudeResultMessage : brain != null ? brain.ResultMessage : ""; }
         }
 
         public InternalBrain Brain
@@ -162,7 +193,8 @@ namespace RobotEngine.Sim
         /// One engine operation for the internal brain, with exactly the semantics of the
         /// matching HTTP endpoint (state machine, retries, trail, recording).
         /// </summary>
-        public IEnumerator ExecuteOp(string tool, float value, Action<Dictionary<string, object>> done)
+        public IEnumerator ExecuteOp(string tool, float value, Action<Dictionary<string, object>> done,
+            Transform pickupTarget = null)
         {
             Dictionary<string, object> result = new Dictionary<string, object>();
             switch (tool)
@@ -208,7 +240,7 @@ namespace RobotEngine.Sim
                 }
                 case "pickup":
                 {
-                    bool success = robot.TryPickup();
+                    bool success = robot.TryPickup(pickupTarget);
                     if (success)
                     {
                         engineState = "PickUp";
@@ -248,59 +280,199 @@ namespace RobotEngine.Sim
             done(result);
         }
 
-        /// <summary>Starts an internal-brain run from a plain-language command (UI or voice).</summary>
+        /// <summary>Starts the Claude tool-use agent for an in-scene command.</summary>
         public bool StartRun(string command)
         {
-            if (busy || brainActive || string.IsNullOrWhiteSpace(command))
+            if (busy || BrainActive || string.IsNullOrWhiteSpace(command))
             {
                 return false;
             }
 
-            string stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
-            string directory = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "runs", "platform_" + stamp));
-            povRecorder.StartSession(Path.Combine(directory, "pov"));
-            recordingStartedAt = Time.time;
-            activeCommand = command;
-            engineState = "Idle";
-            retries = 0;
-            brainActive = true;
-
-            brain = gameObject.AddComponent<InternalBrain>();
-            StartCoroutine(brain.Run(command, directory, this, agentCamera, robot, outcome =>
+            string projectRoot = Directory.GetParent(Application.dataPath).FullName;
+            string scriptPath = Path.Combine(projectRoot, "agent", "main.py");
+            string stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fff", CultureInfo.InvariantCulture);
+            string directory = Path.GetFullPath(Path.Combine(projectRoot, "runs", "platform_" + stamp));
+            string python = Environment.GetEnvironmentVariable("ROBOT_PYTHON");
+            if (string.IsNullOrWhiteSpace(python))
             {
-                brainActive = false;
-                int frames = povRecorder.StopSession();
-                recordingStartedAt = -1f;
-                float seconds = frames / 20f;
-                string metaPath = Path.Combine(directory, "pov_meta.json");
-                File.WriteAllText(metaPath, ApiJson.Obj(
-                    ApiJson.Str("command", activeCommand),
-                    ApiJson.Str("outcome", outcome),
-                    ApiJson.Int("frames", frames),
-                    ApiJson.Num("seconds", seconds),
-                    ApiJson.Bool("too_long", seconds > 20f)) + "\n");
-                Vector2 finalPose = CoordinateConverter.UnityToApiPosition(robot.transform.position);
-                float finalHeading = CoordinateConverter.UnityYawToApiHeading(robot.transform.eulerAngles.y);
-                AddLogEntry(new LogEntry
-                {
-                    Step = brain != null ? brain.Step : 0,
-                    State = outcome,
-                    Tool = "run_summary",
-                    Args = "{}",
-                    Result = "{\"outcome\":\"" + outcome + "\"}",
-                    Collided = false,
-                    Note = "internal brain finished",
-                    Retries = retries,
-                    Outcome = outcome,
-                    X = finalPose.x,
-                    Y = finalPose.y,
-                    Heading = finalHeading,
-                    Holding = robot.HeldObject != null,
-                    Timestamp = DateTime.UtcNow.ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture),
-                });
-            }));
+                python = "python";
+            }
 
-            return true;
+            activeCommand = command;
+            runDirectory = directory;
+            retries = 0;
+            engineState = "Idle";
+            claudeAgentActive = true;
+            claudeSummaryReceived = false;
+            claudeStep = 0;
+            claudeLastTool = "starting Claude";
+            claudeOutcome = "";
+            claudeResultMessage = "";
+            claudeProcessError = "";
+
+            try
+            {
+                if (!File.Exists(scriptPath))
+                {
+                    throw new FileNotFoundException("Claude agent script was not found", scriptPath);
+                }
+
+                Directory.CreateDirectory(directory);
+                System.Diagnostics.ProcessStartInfo startInfo = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = python,
+                    Arguments = "-u " + QuoteProcessArgument(scriptPath) +
+                        " --command " + QuoteProcessArgument(command) +
+                        " --preserve-pose --out " + QuoteProcessArgument(directory),
+                    WorkingDirectory = projectRoot,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+
+                claudeProcess = new System.Diagnostics.Process { StartInfo = startInfo };
+                claudeProcess.OutputDataReceived += (sender, args) =>
+                {
+                    if (!string.IsNullOrEmpty(args.Data)) claudeOutput.Enqueue(args.Data);
+                };
+                claudeProcess.ErrorDataReceived += (sender, args) =>
+                {
+                    if (!string.IsNullOrEmpty(args.Data)) claudeOutput.Enqueue("!" + args.Data);
+                };
+                if (!claudeProcess.Start())
+                {
+                    throw new InvalidOperationException("Python did not start the Claude agent");
+                }
+
+                claudeProcess.BeginOutputReadLine();
+                claudeProcess.BeginErrorReadLine();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                if (claudeProcess != null)
+                {
+                    claudeProcess.Dispose();
+                    claudeProcess = null;
+                }
+
+                claudeAgentActive = false;
+                recordingStartedAt = -1f;
+                claudeOutcome = "fail_not_reached";
+                claudeResultMessage = "Could not start Claude: " + ex.Message;
+                AddClaudeSummary(claudeOutcome, claudeResultMessage);
+                return true;
+            }
+        }
+
+        private static string QuoteProcessArgument(string value)
+        {
+            StringBuilder quoted = new StringBuilder("\"");
+            int backslashes = 0;
+            foreach (char character in value)
+            {
+                if (character == '\\')
+                {
+                    backslashes++;
+                }
+                else if (character == '"')
+                {
+                    quoted.Append('\\', backslashes * 2 + 1);
+                    quoted.Append('"');
+                    backslashes = 0;
+                }
+                else
+                {
+                    quoted.Append('\\', backslashes);
+                    quoted.Append(character);
+                    backslashes = 0;
+                }
+            }
+
+            quoted.Append('\\', backslashes * 2);
+            quoted.Append('"');
+            return quoted.ToString();
+        }
+
+        private void UpdateClaudeAgentProcess()
+        {
+            string output;
+            while (claudeOutput.TryDequeue(out output))
+            {
+                if (output.StartsWith("!", StringComparison.Ordinal))
+                {
+                    claudeProcessError = output.Substring(1);
+                    UnityEngine.Debug.LogWarning("Claude agent: " + claudeProcessError);
+                }
+                else
+                {
+                    UnityEngine.Debug.Log("Claude agent: " + output);
+                }
+            }
+
+            if (claudeProcess == null)
+            {
+                return;
+            }
+
+            bool exited;
+            try
+            {
+                exited = claudeProcess.HasExited;
+            }
+            catch (InvalidOperationException)
+            {
+                exited = true;
+            }
+
+            if (!exited)
+            {
+                return;
+            }
+
+            int exitCode = claudeProcess.ExitCode;
+            claudeProcess.Dispose();
+            claudeProcess = null;
+            claudeAgentActive = false;
+            recordingStartedAt = -1f;
+            if (povRecorder != null && povRecorder.SessionActive)
+            {
+                povRecorder.StopSession();
+            }
+
+            if (!claudeSummaryReceived)
+            {
+                string message = !string.IsNullOrEmpty(claudeProcessError)
+                    ? claudeProcessError
+                    : "Claude agent exited with code " + exitCode + " before returning a result.";
+                AddClaudeSummary("fail_not_reached", message);
+            }
+        }
+
+        private void AddClaudeSummary(string outcome, string message)
+        {
+            claudeOutcome = outcome;
+            claudeResultMessage = message ?? "";
+            Vector2 finalPose = CoordinateConverter.UnityToApiPosition(robot.transform.position);
+            float finalHeading = CoordinateConverter.UnityYawToApiHeading(robot.transform.eulerAngles.y);
+            AddLogEntry(new LogEntry
+            {
+                Step = claudeStep,
+                State = outcome,
+                Tool = "run_summary",
+                Args = "{}",
+                Result = ApiJson.Obj(ApiJson.Str("outcome", outcome), ApiJson.Str("message", claudeResultMessage)),
+                Note = claudeResultMessage,
+                Retries = retries,
+                Outcome = outcome,
+                X = finalPose.x,
+                Y = finalPose.y,
+                Heading = finalHeading,
+                Holding = robot.HeldObject != null,
+                Timestamp = DateTime.UtcNow.ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture),
+            });
         }
 
         public void StopBrain()
@@ -308,6 +480,22 @@ namespace RobotEngine.Sim
             if (brain != null && brainActive)
             {
                 brain.Cancel();
+            }
+
+            if (claudeProcess != null)
+            {
+                try
+                {
+                    if (!claudeProcess.HasExited) claudeProcess.Kill();
+                }
+                catch (InvalidOperationException) { }
+                catch (System.ComponentModel.Win32Exception) { }
+                claudeProcess.Dispose();
+                claudeProcess = null;
+                claudeAgentActive = false;
+                recordingStartedAt = -1f;
+                if (povRecorder != null && povRecorder.SessionActive) povRecorder.StopSession();
+                AddClaudeSummary("fail_not_reached", "Stopped by user.");
             }
         }
 
@@ -354,6 +542,22 @@ namespace RobotEngine.Sim
             return jpeg;
         }
 
+        private void OnDestroy()
+        {
+            if (claudeProcess == null)
+            {
+                return;
+            }
+
+            try
+            {
+                if (!claudeProcess.HasExited) claudeProcess.Kill();
+            }
+            catch (InvalidOperationException) { }
+            catch (System.ComponentModel.Win32Exception) { }
+            claudeProcess.Dispose();
+            claudeProcess = null;
+        }
         public void Enqueue(ApiRequest request)
         {
             requests.Enqueue(request);
@@ -372,6 +576,7 @@ namespace RobotEngine.Sim
                     RespondJson(request, 500, ApiJson.Obj(ApiJson.Str("error", ex.Message)));
                 }
             }
+            UpdateClaudeAgentProcess();
         }
 
         private void Process(ApiRequest request)
@@ -617,7 +822,14 @@ namespace RobotEngine.Sim
                 return;
             }
 
-            logEntries.Add(new LogEntry
+            string framePath = body.frame_path ?? "";
+            if (!string.IsNullOrEmpty(framePath) && !Path.IsPathRooted(framePath) &&
+                !string.IsNullOrEmpty(runDirectory))
+            {
+                framePath = Path.GetFullPath(Path.Combine(runDirectory, framePath));
+            }
+
+            LogEntry entry = new LogEntry
             {
                 Step = body.step,
                 State = body.state ?? "",
@@ -628,16 +840,24 @@ namespace RobotEngine.Sim
                 Note = body.note ?? "",
                 Retries = body.retries,
                 Outcome = body.outcome ?? "",
-                FramePath = body.frame_path ?? "",
+                FramePath = framePath,
                 X = body.x,
                 Y = body.y,
                 Heading = body.heading,
                 Holding = body.holding,
                 Timestamp = DateTime.UtcNow.ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture),
-            });
-            if (logEntries.Count > MaxLogEntries)
+            };
+            AddLogEntry(entry);
+            if (entry.Tool == "run_summary")
             {
-                logEntries.RemoveAt(0);
+                claudeSummaryReceived = true;
+                claudeOutcome = entry.Outcome;
+                claudeResultMessage = entry.Note;
+            }
+            else
+            {
+                claudeStep = Math.Max(claudeStep, entry.Step);
+                claudeLastTool = entry.Tool;
             }
 
             RespondJson(request, 200, ApiJson.Obj(ApiJson.Bool("ok", true), ApiJson.Int("count", logEntries.Count)));
@@ -757,7 +977,10 @@ namespace RobotEngine.Sim
                 framesDirectory = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "runs", stamp));
             }
 
-            runDirectory = framesDirectory;
+            recordFramesDirectory = framesDirectory;
+            runDirectory = !string.IsNullOrEmpty(body.frames_dir) && Directory.GetParent(framesDirectory) != null
+                ? Directory.GetParent(framesDirectory).FullName
+                : framesDirectory;
             povRecorder.StartSession(framesDirectory);
             recordingStartedAt = Time.time;
             File.WriteAllText(Path.Combine(framesDirectory, "engine_meta.json"),
@@ -773,7 +996,7 @@ namespace RobotEngine.Sim
             int frames = povRecorder.StopSession();
             float seconds = frames / 20f;
             recordingStartedAt = -1f;
-            string metaPath = Path.Combine(runDirectory, "engine_meta.json");
+            string metaPath = Path.Combine(recordFramesDirectory, "engine_meta.json");
             if (File.Exists(metaPath))
             {
                 File.WriteAllText(metaPath, ApiJson.Obj(
@@ -884,10 +1107,11 @@ namespace RobotEngine.Sim
         private void HandleRunStatus(ApiRequest request)
         {
             RespondJson(request, 200, ApiJson.Obj(
-                ApiJson.Bool("active", brainActive),
-                ApiJson.Int("step", brain != null ? brain.Step : 0),
-                ApiJson.Str("tool", brain != null ? brain.LastTool : ""),
-                ApiJson.Str("outcome", brain != null ? brain.Outcome : ""),
+                ApiJson.Bool("active", BrainActive),
+                ApiJson.Int("step", AgentStep),
+                ApiJson.Str("tool", AgentLastTool),
+                ApiJson.Str("outcome", claudeOutcome),
+                ApiJson.Str("message", AgentResultMessage),
                 ApiJson.Str("voice", voiceText),
                 ApiJson.Bool("auto_run_voice", AutoRunVoice)));
         }

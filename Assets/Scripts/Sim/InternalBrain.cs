@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Text;
+using System.Text.RegularExpressions;
 using UnityEngine;
 using RobotEngine.Robot;
 using RobotEngine.Views;
@@ -22,11 +23,13 @@ namespace RobotEngine.Sim
         private const float RejectWindow = 10f;
         private static readonly float[] AvoidanceAngles = { 0f, -20f, 20f, -40f, 40f, -60f, 60f, -90f, 90f, -120f, 120f, 180f };
 
-        private struct BlobMatch
+        private sealed class TallestCandidate
         {
-            public Blob Blob;
+            public Transform Target;
+            public float Height;
+            public float Bearing;
+            public int Area;
         }
-
         private EngineCore engine;
         private AgentCamera camera;
         private RobotController robot;
@@ -52,21 +55,28 @@ namespace RobotEngine.Sim
         private int prevRetries;
         private int pickupTries;
         private int dropTries;
-        private readonly List<KeyValuePair<float, float>> measureQueue = new List<KeyValuePair<float, float>>();
-        private readonly List<KeyValuePair<float, float>> measurements = new List<KeyValuePair<float, float>>();
-        private float bestHeight = -1f;
-        private float bestBearing;
+        private readonly List<TallestCandidate> tallestCandidates = new List<TallestCandidate>();
         private float blindBudget;
         private int blindSteps;
         private bool seenZoneClose;
         private Vector2 cachedTargetPosition;
         private int cachedApproachSteps;
+        private Transform targetTransform;
+        private Vector2 targetSurfacePoint;
+        private bool hasTargetSurfacePoint;
+        private float targetDistance = float.PositiveInfinity;
+        private Vector2 zoneWorldPoint;
+        private Vector2 navigationWaypoint;
+        private Vector2 navigationDestination;
+        private bool hasNavigationWaypoint;
+        private bool hasZoneWorldPoint;
         private float lastDepth = float.NaN;
         private bool attachImage = true;
 
         public int Step { get; private set; }
         public string LastTool { get; private set; } = "";
         public string Outcome { get; private set; } = "";
+        public string ResultMessage { get; private set; } = "";
         public bool Cancelled { get; private set; }
 
         public void Cancel()
@@ -84,11 +94,19 @@ namespace RobotEngine.Sim
             runDirectory = directory;
             Step = 0;
             Outcome = "";
+            ResultMessage = "";
             blindBudget = 0f;
             blindSteps = 0;
             seenZoneClose = false;
             cachedTargetPosition = Vector2.zero;
             cachedApproachSteps = 0;
+            targetTransform = null;
+            targetSurfacePoint = Vector2.zero;
+            hasTargetSurfacePoint = false;
+            targetDistance = float.PositiveInfinity;
+            zoneWorldPoint = Vector2.zero;
+            hasZoneWorldPoint = false;
+            hasNavigationWaypoint = false;
             targetColour = null;
             targetShape = null;
             mode = "colour";
@@ -104,44 +122,53 @@ namespace RobotEngine.Sim
             prevRetries = 0;
             pickupTries = 0;
             dropTries = 0;
-            measureQueue.Clear();
-            measurements.Clear();
-            bestHeight = -1f;
+            tallestCandidates.Clear();
             attachImage = true;
             Cancelled = false;
 
             string lower = command.ToLowerInvariant();
             foreach (string candidate in new[] { "red", "blue", "yellow", "green" })
             {
-                if (lower.Contains(candidate))
+                if (ContainsWord(lower, candidate))
                 {
                     targetColour = candidate;
                     break;
                 }
             }
 
-            if (lower.Contains("round") || lower.Contains("ball") || lower.Contains("sphere"))
+            if (ContainsWord(lower, "round") || ContainsWord(lower, "ball") || ContainsWord(lower, "sphere"))
             {
                 targetShape = "round";
             }
-            else if (lower.Contains("cube") || lower.Contains("box") || lower.Contains("square"))
+            else if (ContainsWord(lower, "cube") || ContainsWord(lower, "box") || ContainsWord(lower, "square"))
             {
                 targetShape = "boxy";
             }
-            else if (lower.Contains("cylinder"))
+            else if (ContainsWord(lower, "cylinder"))
             {
                 targetShape = "cylinder";
             }
-            else if (lower.Contains("cone"))
+            else if (ContainsWord(lower, "cone"))
             {
                 targetShape = "cone";
             }
 
-            if (lower.Contains("tallest") || lower.Contains("biggest"))
+            if (ContainsWord(lower, "tallest") || ContainsWord(lower, "biggest") || ContainsWord(lower, "largest"))
             {
                 mode = "tallest";
             }
 
+            bool questionLike = Regex.IsMatch(lower.Trim(), @"^(what|why|how|who|where|when|explain|tell me)\b");
+            bool hasFetchIntent = ContainsAnyWord(lower,
+                "bring", "fetch", "get", "retrieve", "pick up", "collect", "find", "locate", "take");
+            bool hasTargetDescription = targetColour != null || targetShape != null || mode == "tallest";
+            if (!hasTargetDescription || (questionLike && !hasFetchIntent))
+            {
+                ResultMessage = "What do you mean? Tell me which object to bring, such as the tallest object or a color and shape.";
+                Outcome = "needs_clarification";
+                done(Outcome);
+                yield break;
+            }
             if (mode != "tallest" && VisualMemoryDatabase.TryFindNearest(
                 CurrentPose(), targetColour, targetShape, out cachedTargetPosition))
             {
@@ -161,6 +188,7 @@ namespace RobotEngine.Sim
                 bool holding = robot.HeldObject != null;
                 int retries = engine.RetryCount;
                 lastDepth = camera.CaptureDepth() ?? float.NaN;
+                targetDistance = float.PositiveInfinity;
 
                 if (retries >= 6)
                 {
@@ -187,7 +215,7 @@ namespace RobotEngine.Sim
                         {
                             lastResult = result;
                             LogStep(retries, pose, heading, holding, "pickup", "{}", result, null, false);
-                        });
+                        }, targetTransform);
                         if (lastResult.ContainsKey("success") && (bool)lastResult["success"])
                         {
                             phase = "return";
@@ -226,7 +254,20 @@ namespace RobotEngine.Sim
                     {
                         lastResult = result;
                         LogStep(retries, pose, heading, holding, "pickup", "{}", result, null, false);
-                    });
+                    }, targetTransform);
+                    if (!lastResult.ContainsKey("success") || !(bool)lastResult["success"])
+                    {
+                        outcome = "fail_not_reached";
+                        reason = "object was released outside the drop zone and could not be recovered";
+                        LogStep(retries, pose, heading, false, "finish",
+                            "{\"outcome\":\"" + outcome + "\"}",
+                            new Dictionary<string, object>
+                            {
+                                { "outcome", outcome }, { "reason", reason }
+                            }, null, true);
+                        break;
+                    }
+
                     continue;
                 }
 
@@ -241,6 +282,11 @@ namespace RobotEngine.Sim
                     framePng = EncodePng(pixels);
                     Remember(blobs, heading);
                     VisualMemoryDatabase.Observe(blobs, camera);
+                    Blob targetBlob = BestMatch(blobs, heading);
+                    if (targetBlob != null)
+                    {
+                        CaptureTargetHit(targetBlob);
+                    }
                 }
 
                 string tool;
@@ -290,7 +336,7 @@ namespace RobotEngine.Sim
                 }
 
                 var opResult = new Dictionary<string, object>();
-                yield return engine.ExecuteOp(tool, value, r => opResult = r);
+                yield return engine.ExecuteOp(tool, value, r => opResult = r, tool == "pickup" ? targetTransform : null);
                 lastResult = opResult;
                 bool moved = tool == "move" || tool == "turn";
                 if (moved && opResult.ContainsKey("collided") && (bool)opResult["collided"])
@@ -332,6 +378,23 @@ namespace RobotEngine.Sim
             done(outcome);
         }
 
+        private static bool ContainsWord(string text, string word)
+        {
+            return Regex.IsMatch(text, @"\b" + Regex.Escape(word) + @"\b");
+        }
+
+        private static bool ContainsAnyWord(string text, params string[] words)
+        {
+            for (int i = 0; i < words.Length; i++)
+            {
+                if (ContainsWord(text, words[i]))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
         private struct BrainState
         {
             public int Retries;
@@ -391,12 +454,6 @@ namespace RobotEngine.Sim
                 }
 
                 NavigateToCachedTarget(s, blobs, ref note, out tool, out value);
-                return;
-            }
-
-            if (phase == "measure")
-            {
-                Measure(s, blobs, ref note, out tool, out value);
                 return;
             }
 
@@ -474,6 +531,153 @@ namespace RobotEngine.Sim
             }
         }
 
+        private void CaptureTargetHit(Blob blob)
+        {
+            Vector3 point;
+            Collider collider;
+            if (!camera.TryGetWorldPointAt(
+                blob.Cx / RobotVision.FrameWidth,
+                blob.Cy / RobotVision.FrameHeight,
+                out point, out collider) || collider == null || collider.attachedRigidbody == null)
+            {
+                return;
+            }
+
+            Transform candidate = collider.attachedRigidbody.transform;
+            if (!IsRequestedTargetColour(candidate))
+            {
+                return;
+            }
+
+            targetTransform = candidate;
+            targetSurfacePoint = new Vector2(point.x, point.z);
+            hasTargetSurfacePoint = true;
+            Vector3 cameraPosition;
+            Quaternion cameraRotation;
+            camera.GetDisplayPose(out cameraPosition, out cameraRotation);
+            targetDistance = Vector3.Distance(cameraPosition, point);
+        }
+
+        private bool IsRequestedTargetColour(Transform candidate)
+        {
+            if (targetColour == null)
+            {
+                return true;
+            }
+
+            Renderer renderer = candidate.GetComponent<Renderer>();
+            if (renderer == null)
+            {
+                renderer = candidate.GetComponentInChildren<Renderer>();
+            }
+
+            if (renderer == null || renderer.sharedMaterial == null)
+            {
+                return false;
+            }
+
+            float hue, saturation, value;
+            Color.RGBToHSV(renderer.sharedMaterial.color, out hue, out saturation, out value);
+            switch (targetColour)
+            {
+                case "green": return hue >= 100f / 360f && hue <= 150f / 360f;
+                case "blue": return hue >= 210f / 360f && hue <= 250f / 360f;
+                case "yellow": return hue >= 40f / 360f && hue <= 70f / 360f;
+                case "red": return hue >= 350f / 360f || hue <= 10f / 360f;
+                default: return true;
+            }
+        }
+
+        private Vector2 ObjectApproachPoint(Vector2 from)
+        {
+            Vector2 center;
+            float standoff;
+            if (targetTransform != null)
+            {
+                center = new Vector2(targetTransform.position.x, targetTransform.position.z);
+                standoff = 0.62f;
+            }
+            else if (hasTargetSurfacePoint)
+            {
+                center = targetSurfacePoint;
+                standoff = 0.4f;
+            }
+            else
+            {
+                return from;
+            }
+
+            Vector2 away = from - center;
+            if (away.sqrMagnitude < 0.0001f && targetBearing >= 0f)
+            {
+                float radians = targetBearing * Mathf.Deg2Rad;
+                away = new Vector2(-Mathf.Cos(radians), Mathf.Sin(radians));
+            }
+
+            return center + away.normalized * standoff;
+        }
+
+        private void MoveToWorldPoint(BrainState s, Vector2 destination, float maxDistance,
+            ref string note, out string tool, out float value)
+        {
+            Vector2 waypoint;
+            bool destinationChanged = !hasNavigationWaypoint ||
+                (destination - navigationDestination).sqrMagnitude > 0.36f;
+            bool waypointReached = hasNavigationWaypoint &&
+                (navigationWaypoint - s.Pose).sqrMagnitude < 0.04f;
+            if (destinationChanged || waypointReached)
+            {
+                hasNavigationWaypoint = GridPathfinder.TryGetNextWaypoint(robot, s.Pose, destination,
+                    out navigationWaypoint);
+                navigationDestination = destination;
+            }
+
+            if (!hasNavigationWaypoint)
+            {
+                float directBearing = Mathf.Atan2(-(destination.y - s.Pose.y),
+                    destination.x - s.Pose.x) * Mathf.Rad2Deg;
+                MoveSafelyToward(directBearing, maxDistance, ref note, out tool, out value);
+                note += " | no complete grid route; using clear-lane steering";
+                return;
+            }
+
+            waypoint = navigationWaypoint;
+            Vector2 delta = waypoint - s.Pose;
+            float distance = delta.magnitude;
+            if (distance < 0.03f)
+            {
+                tool = "turn";
+                value = 0f;
+                return;
+            }
+
+            float bearing = Mathf.Atan2(-delta.y, delta.x) * Mathf.Rad2Deg;
+            float turn = Mathf.Repeat(bearing - CurrentHeading() + 540f, 360f) - 180f;
+            if (Mathf.Abs(turn) > 8f)
+            {
+                tool = "turn";
+                value = Mathf.Round(turn * 10f) / 10f;
+                note += " | turning to face next route waypoint";
+                return;
+            }
+
+            float distanceToMove = Mathf.Min(maxDistance, distance);
+            float radians = bearing * Mathf.Deg2Rad;
+            Vector3 direction = new Vector3(Mathf.Cos(radians), 0f, -Mathf.Sin(radians));
+            float clearance = robot.GetTravelClearance(direction, distanceToMove);
+            if (clearance < 0.08f)
+            {
+                hasNavigationWaypoint = false;
+                tool = "turn";
+                value = 35f * collisionTurnSign;
+                note += " | route changed; replanning around an obstacle";
+                return;
+            }
+
+            tool = "move";
+            value = Mathf.Min(distanceToMove, Mathf.Max(0.08f, clearance - 0.03f));
+            note += " | following forward route";
+        }
         private void NavigateToCachedTarget(BrainState s, List<Blob> blobs, ref string note,
             out string tool, out float value)
         {
@@ -491,19 +695,32 @@ namespace RobotEngine.Sim
                 return;
             }
 
-            float bearing = Mathf.Atan2(-delta.y, delta.x) * Mathf.Rad2Deg;
-            MoveSafelyToward(bearing, Mathf.Min(0.8f, Mathf.Max(0.25f, distance - 1f)),
-                ref note, out tool, out value);
+            MoveToWorldPoint(s, cachedTargetPosition, 0.65f, ref note, out tool, out value);
             note += " | navigating to remembered sighting";
         }
 
         private void Scan(BrainState s, List<Blob> blobs, ref string note, out string tool, out float value)
         {
-            if (blobs != null)
+            if (blobs == null)
+            {
+                tool = "turn";
+                value = 60f;
+                note = "scan continues";
+                return;
+            }
+
+            if (mode == "tallest")
+            {
+                CollectTallestCandidates(blobs, s.Heading);
+                if (scanTurned >= 340f && SelectTallestCandidate(s, ref note, out tool, out value))
+                {
+                    return;
+                }
+            }
+            else
             {
                 Blob match = BestMatch(blobs, s.Heading);
-                bool sweepDone = scanTurned >= 340f;
-                if (match != null && (mode != "tallest" || sweepDone))
+                if (match != null)
                 {
                     targetBearing = BearingOf(s.Heading, match.Cx);
                     phase = "approach";
@@ -513,157 +730,203 @@ namespace RobotEngine.Sim
                     value = Mathf.Round(offset * 10f) / 10f;
                     return;
                 }
+            }
 
-                if (mode == "tallest")
+            if (scanTurned >= 360f)
+            {
+                if (rejectedBearings.Count > 0 && fullSweeps < 2)
                 {
-                    foreach (Blob blob in blobs)
-                    {
-                        if (blob.Colour == "cyan")
-                        {
-                            continue;
-                        }
-
-                        float bearing = BearingOf(s.Heading, blob.Cx);
-                        bool seen = false;
-                        foreach (KeyValuePair<float, float> entry in measureQueue)
-                        {
-                            if (Mathf.Abs(Mathf.Repeat(bearing - entry.Key + 540f, 360f) - 180f) < 25f)
-                            {
-                                seen = true;
-                                break;
-                            }
-                        }
-
-                        if (!seen)
-                        {
-                            measureQueue.Add(new KeyValuePair<float, float>(bearing, blob.Area));
-                        }
-                    }
-                }
-
-                if (sweepDone && mode == "tallest" && measureQueue.Count > 0)
-                {
-                    phase = "measure";
-                    GoMeasure(s, ref note, out tool, out value);
+                    fullSweeps += 1;
+                    rejectedBearings.Clear();
+                    scanTurned = 0f;
+                    tool = "turn";
+                    value = 60f;
+                    note += " | clean re-sweep after rejections";
                     return;
                 }
 
-                if (scanTurned >= 360f)
-                {
-                    if (mode == "tallest" && measureQueue.Count > 0)
-                    {
-                        phase = "measure";
-                        GoMeasure(s, ref note, out tool, out value);
-                        return;
-                    }
-
-                    if (rejectedBearings.Count > 0 && fullSweeps < 2)
-                    {
-                        fullSweeps += 1;
-                        rejectedBearings.Clear();
-                        scanTurned = 0f;
-                        tool = "turn";
-                        value = 60f;
-                        note += " | clean re-sweep after rejections";
-                        return;
-                    }
-
-                    tool = "finish";
-                    value = 0f;
-                    note = "target never appeared in any scan frame";
-                    return;
-                }
-
-                scanTurned += 60f;
-                tool = "turn";
-                value = 60f;
+                tool = "finish";
+                value = 0f;
+                note = "No matching items found for your request.";
+                ResultMessage = note;
                 return;
             }
 
+            scanTurned += 60f;
             tool = "turn";
             value = 60f;
-            note = "scan continues";
         }
 
-        private void GoMeasure(BrainState s, ref string note, out string tool, out float value)
+        private void CollectTallestCandidates(List<Blob> blobs, float heading)
         {
-            if (measureQueue.Count == 0)
+            foreach (Blob blob in blobs)
             {
-                tool = "finish";
-                value = 0f;
-                note = "nothing to measure";
-                return;
-            }
-
-            targetBearing = measureQueue[0].Key;
-            float delta = Mathf.Repeat(targetBearing - s.Heading + 540f, 360f) - 180f;
-            note = "measuring candidate height";
-            tool = "turn";
-            value = Mathf.Round(delta * 10f) / 10f;
-        }
-
-        private void Measure(BrainState s, List<Blob> blobs, ref string note, out string tool, out float value)
-        {
-            if (!float.IsNaN(lastDepth) && lastDepth < 2.8f && blobs != null)
-            {
-                Blob tallest = null;
-                foreach (Blob blob in blobs)
+                if (blob == null || blob.Colour == "cyan")
                 {
-                    if (blob.Colour == "cyan")
-                    {
-                        continue;
-                    }
+                    continue;
+                }
 
-                    if (tallest == null || blob.H > tallest.H)
+                Vector3 hitPoint;
+                Collider hitCollider;
+                if (!camera.TryGetWorldPointAt(blob.Cx / RobotVision.FrameWidth,
+                    blob.Cy / RobotVision.FrameHeight, out hitPoint, out hitCollider) ||
+                    hitCollider == null || hitCollider.attachedRigidbody == null)
+                {
+                    continue;
+                }
+
+                Transform target = hitCollider.attachedRigidbody.transform;
+                if (SceneRegistry.IsInsideDropZone(target.position) ||
+                    !BlobColourMatches(target, blob.Colour))
+                {
+                    continue;
+                }
+
+                float height = hitCollider.bounds.size.y;
+                TallestCandidate existing = null;
+                for (int i = 0; i < tallestCandidates.Count; i++)
+                {
+                    if (tallestCandidates[i].Target == target)
                     {
-                        tallest = blob;
+                        existing = tallestCandidates[i];
+                        break;
                     }
                 }
 
-                if (tallest != null)
+                if (existing == null)
                 {
-                    float estimate = PhysicalHeight(tallest.H, lastDepth);
-                    measurements.Add(new KeyValuePair<float, float>(targetBearing, estimate));
-                    if (estimate > bestHeight)
+                    tallestCandidates.Add(new TallestCandidate
                     {
-                        bestHeight = estimate;
-                        bestBearing = targetBearing;
-                    }
+                        Target = target,
+                        Height = height,
+                        Bearing = BearingOf(heading, blob.Cx),
+                        Area = blob.Area
+                    });
+                }
+                else
+                {
+                    existing.Height = Mathf.Max(existing.Height, height);
+                    existing.Bearing = BearingOf(heading, blob.Cx);
+                    existing.Area = Mathf.Max(existing.Area, blob.Area);
+                }
+            }
+        }
+
+        private bool BlobColourMatches(Transform target, string colour)
+        {
+            Renderer renderer = target.GetComponent<Renderer>();
+            if (renderer == null)
+            {
+                renderer = target.GetComponentInChildren<Renderer>();
+            }
+
+            if (renderer == null || renderer.sharedMaterial == null)
+            {
+                return false;
+            }
+
+            float hue, saturation, brightness;
+            Color.RGBToHSV(renderer.sharedMaterial.color, out hue, out saturation, out brightness);
+            switch (colour)
+            {
+                case "green": return hue >= 100f / 360f && hue <= 150f / 360f;
+                case "blue": return hue >= 210f / 360f && hue <= 250f / 360f;
+                case "yellow": return hue >= 40f / 360f && hue <= 70f / 360f;
+                case "red": return hue >= 350f / 360f || hue <= 10f / 360f;
+                default: return false;
+            }
+        }
+
+        private bool SelectTallestCandidate(BrainState s, ref string note, out string tool, out float value)
+        {
+            tool = null;
+            value = 0f;
+            TallestCandidate tallest = null;
+            foreach (TallestCandidate candidate in tallestCandidates)
+            {
+                if (candidate.Target != null && (tallest == null || candidate.Height > tallest.Height ||
+                    (Mathf.Approximately(candidate.Height, tallest.Height) && candidate.Area > tallest.Area)))
+                {
+                    tallest = candidate;
                 }
             }
 
-            if (measureQueue.Count > 0)
+            if (tallest == null)
             {
-                measureQueue.RemoveAt(0);
+                return false;
             }
 
-            if (measureQueue.Count > 0)
-            {
-                GoMeasure(s, ref note, out tool, out value);
-                return;
-            }
-
-            if (bestBearing < 0f && bestHeight < 0f)
-            {
-                tool = "finish";
-                value = 0f;
-                note = "no measurable object found";
-                return;
-            }
-
+            targetTransform = tallest.Target;
+            targetBearing = tallest.Bearing;
             phase = "approach";
-            targetBearing = bestBearing;
             float delta = Mathf.Repeat(targetBearing - s.Heading + 540f, 360f) - 180f;
-            note = "tallest candidate selected (" + bestHeight.ToString("F2", CultureInfo.InvariantCulture) + " m est.)";
+            note = "tallest visible object selected (" + tallest.Height.ToString("F2", CultureInfo.InvariantCulture) +
+                " m high)";
             tool = "turn";
             value = Mathf.Round(delta * 10f) / 10f;
+            return true;
         }
+        private bool TryPickupTargetNow(BrainState s, ref string note, out string tool, out float value)
+        {
+            tool = null;
+            value = 0f;
+            if (targetTransform == null)
+            {
+                return false;
+            }
 
+            Vector2 targetPosition = new Vector2(targetTransform.position.x, targetTransform.position.z);
+            Vector2 delta = targetPosition - s.Pose;
+            Collider targetCollider = targetTransform.GetComponentInChildren<Collider>();
+            float reach = RobotController.ReachDistance + (targetCollider != null
+                ? Mathf.Max(targetCollider.bounds.extents.x, targetCollider.bounds.extents.z) : 0f);
+            if (delta.magnitude > reach)
+            {
+                return false;
+            }
+
+            float bearing = Mathf.Atan2(-delta.y, delta.x) * Mathf.Rad2Deg;
+            float turn = Mathf.Repeat(bearing - CurrentHeading() + 540f, 360f) - 180f;
+            if (Mathf.Abs(turn) > 10f)
+            {
+                tool = "turn";
+                value = Mathf.Round(turn * 10f) / 10f;
+                note += " | aligning with requested object for pickup";
+                return true;
+            }
+
+            tool = "pickup";
+            note += " | requested object within pickup reach";
+            return true;
+        }
         private void Approach(BrainState s, List<Blob> blobs, ref string note, out string tool, out float value)
         {
+            if (TryPickupTargetNow(s, ref note, out tool, out value))
+            {
+                return;
+            }
+
             Blob blob = blobs != null ? BestMatch(blobs, s.Heading) : null;
             if (blob == null)
             {
+                if (targetTransform != null || hasTargetSurfacePoint)
+                {
+                    Vector2 approachPoint = ObjectApproachPoint(s.Pose);
+                    if ((approachPoint - s.Pose).magnitude <= 0.52f && targetTransform != null &&
+                        targetDistance <= 0.62f)
+                    {
+                        pending = "pickup";
+                        tool = "move";
+                        value = 0.18f;
+                        note += " | target reached; closing for pickup";
+                        return;
+                    }
+
+                    MoveToWorldPoint(s, approachPoint, 0.65f, ref note, out tool, out value);
+                    note += " | routing to remembered target position";
+                    return;
+                }
+
                 if (pickupTries >= 2 && targetBearing >= 0f)
                 {
                     rejectedBearings.Add(targetBearing);
@@ -711,30 +974,27 @@ namespace RobotEngine.Sim
                 return;
             }
 
-            // 0.9 m camera depth: close in and press until the bump-grab lands
-            // (matches the proven Python policy dynamics).
-            if (Mathf.Abs(offset) <= 14f && !float.IsNaN(lastDepth) && lastDepth <= 0.9f)
+            if ((targetTransform != null || hasTargetSurfacePoint) && targetDistance <= 0.62f &&
+                Mathf.Abs(offset) <= 14f)
             {
                 pending = "pickup";
                 tool = "move";
-                value = 0.25f;
-                note += " | in pickup range, closing";
+                value = 0.18f;
+                note += " | requested object in pickup range";
                 return;
             }
 
-            if (Mathf.Abs(offset) <= 14f && float.IsNaN(lastDepth) && height >= 200f)
+            if (targetTransform != null || hasTargetSurfacePoint)
             {
-                pending = "pickup";
-                tool = "move";
-                value = 0.2f;
-                note += " | filling the frame, closing";
+                MoveToWorldPoint(s, ObjectApproachPoint(s.Pose), 0.65f,
+                    ref note, out tool, out value);
+                note += " | routing around obstacles toward target";
                 return;
             }
 
-            MoveSafelyToward(targetBearing, 0.8f, ref note, out tool, out value);
-            note += " | approaching";
+            MoveSafelyToward(targetBearing, 0.65f, ref note, out tool, out value);
+            note += " | approaching visible target";
         }
-
         private void Deliver(BrainState s, List<Blob> blobs, ref string note, out string tool, out float value)
         {
             Blob zone = null;
@@ -752,6 +1012,13 @@ namespace RobotEngine.Sim
                 if (zone != null)
                 {
                     zoneBearing = BearingOf(s.Heading, zone.Cx);
+                    Vector3 zonePoint;
+                    if (!hasZoneWorldPoint && camera.TryGetWorldPointAt(zone.Cx / RobotVision.FrameWidth,
+                        zone.Cy / RobotVision.FrameHeight, out zonePoint))
+                    {
+                        zoneWorldPoint = new Vector2(zonePoint.x, zonePoint.z);
+                        hasZoneWorldPoint = true;
+                    }
                 }
             }
 
@@ -775,8 +1042,17 @@ namespace RobotEngine.Sim
                     return;
                 }
 
-                MoveSafelyToward(zoneBearing, Mathf.Clamp(zoneDistance - 0.9f, 0.3f, 0.7f),
-                    ref note, out tool, out value);
+                if (hasZoneWorldPoint && zoneDistance > 1.4f)
+                {
+                    Vector2 fromZone = s.Pose - zoneWorldPoint;
+                    Vector2 destination = zoneWorldPoint + fromZone.normalized * 0.45f;
+                    MoveToWorldPoint(s, destination, 0.65f, ref note, out tool, out value);
+                }
+                else
+                {
+                    MoveSafelyToward(zoneBearing, Mathf.Clamp(zoneDistance - 0.9f, 0.3f, 0.7f),
+                        ref note, out tool, out value);
+                }
                 note = "carrying to zone" + note;
                 return;
             }
@@ -860,6 +1136,42 @@ namespace RobotEngine.Sim
                 return false;
             }
 
+            if (targetShape != null)
+            {
+                Vector3 point;
+                Collider collider;
+                if (!camera.TryGetWorldPointAt(blob.Cx / RobotVision.FrameWidth,
+                    blob.Cy / RobotVision.FrameHeight, out point, out collider) ||
+                    collider == null || collider.attachedRigidbody == null)
+                {
+                    return false;
+                }
+
+                if (targetShape == "round" && !(collider is SphereCollider))
+                {
+                    return false;
+                }
+
+                if (targetShape == "boxy" && !(collider is BoxCollider))
+                {
+                    return false;
+                }
+
+                if (targetShape == "cylinder" && !(collider is CapsuleCollider))
+                {
+                    return false;
+                }
+
+                if (targetShape == "cone")
+                {
+                    MeshCollider meshCollider = collider as MeshCollider;
+                    if (meshCollider == null || meshCollider.sharedMesh == null ||
+                        !meshCollider.sharedMesh.name.StartsWith("GeneratedCone", StringComparison.Ordinal))
+                    {
+                        return false;
+                    }
+                }
+            }
             if (targetColour != null && blob.Colour != targetColour)
             {
                 return false;

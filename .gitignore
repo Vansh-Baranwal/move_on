@@ -59,3 +59,6 @@ __pycache__/
 
 # Secrets (API keys) - never commit
 .env
+
+# Generated local voice command recording
+/tools/utterance.wav
