@@ -18,7 +18,7 @@ namespace RobotEngine.Views
         private const float AspectRatio = 4f / 3f;
         private const float MaxDepth = 10f;
         private const float NormalEyeHeight = 0.5f;
-        private const float MinimumCarryingEyeHeight = 1.25f;
+        private const float MinimumCarryingEyeHeight = 1.0f;
         private const float CarriedObjectClearance = 0.3f;
         private Camera agentCamera;
         private RenderTexture renderTexture;

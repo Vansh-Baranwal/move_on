@@ -9,6 +9,7 @@ namespace RobotEngine.Sim
     {
         private const float GridMin = -4.5f;
         private const float GridStep = 0.25f;
+        private const float PathSafetyMargin = 0.07f;
         private const int GridSize = 37;
         private const int CellCount = GridSize * GridSize;
         private static readonly int[] NeighborX = { -1, 0, 1, -1, 1, -1, 0, 1 };
@@ -211,7 +212,9 @@ namespace RobotEngine.Sim
                 }
 
                 Vector3 direction = new Vector3(delta.x / distance, 0f, delta.y / distance);
-                if (robot.GetTravelClearance(direction, distance) + 0.02f < distance)
+                float clearanceProbeDistance = distance + PathSafetyMargin;
+                float clearance = robot.GetTravelClearance(direction, clearanceProbeDistance);
+                if (clearance < clearanceProbeDistance - 0.01f)
                 {
                     break;
                 }
@@ -280,7 +283,8 @@ namespace RobotEngine.Sim
         {
             if (walkable[index] == 0)
             {
-                walkable[index] = robot.IsPositionClear(CellPosition(index)) ? (sbyte)1 : (sbyte)-1;
+                walkable[index] = robot.IsPositionClear(CellPosition(index), PathSafetyMargin)
+                    ? (sbyte)1 : (sbyte)-1;
             }
 
             return walkable[index] > 0;

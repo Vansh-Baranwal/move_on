@@ -40,6 +40,8 @@ namespace RobotEngine.Robot
         private const float CastHeight = 0.66f;
         private const float CastCenterHeight = 0.35f;
         private const float CastSkin = 0.02f;
+        private const float PathSafetyMargin = 0.07f;
+        private const float RouteSegmentLength = 0.55f;
 
         private readonly List<Transform> wheels = new List<Transform>();
         private Transform holdPoint;
@@ -241,6 +243,99 @@ namespace RobotEngine.Robot
 
         /// <summary>Drives forward (positive) or backward (negative) at MoveSpeed.</summary>
         public IEnumerator MoveRoutine(float signedDistance, Action<MoveResult> done)
+        {
+            if (signedDistance > 0.05f)
+            {
+                float probeDistance = signedDistance + PathSafetyMargin;
+                float directClearance = GetTravelClearance(transform.forward, probeDistance);
+                if (directClearance < probeDistance - 0.01f)
+                {
+                    yield return MoveAlongPlannedPath(signedDistance, done);
+                    yield break;
+                }
+            }
+
+            yield return MoveStraightRoutine(signedDistance, done);
+        }
+
+        private IEnumerator MoveAlongPlannedPath(float requestedDistance, Action<MoveResult> done)
+        {
+            Vector3 start = transform.position;
+            Vector3 initialForward = transform.forward;
+            Vector2 destination = new Vector2(
+                start.x + initialForward.x * requestedDistance,
+                start.z + initialForward.z * requestedDistance);
+            float moved = 0f;
+
+            for (int segmentIndex = 0; segmentIndex < 64; segmentIndex++)
+            {
+                Vector2 position = new Vector2(transform.position.x, transform.position.z);
+                Vector2 remaining = destination - position;
+                if (remaining.magnitude <= 0.08f)
+                {
+                    done(new MoveResult(false, moved));
+                    yield break;
+                }
+
+                Vector2 waypoint;
+                if (!GridPathfinder.TryGetNextWaypoint(this, position, destination, out waypoint))
+                {
+                    done(new MoveResult(true, moved));
+                    yield break;
+                }
+
+                Vector2 delta = waypoint - position;
+                if (delta.magnitude < 0.025f)
+                {
+                    done(new MoveResult(true, moved));
+                    yield break;
+                }
+
+                float desiredYaw = Mathf.Atan2(delta.x, delta.y) * Mathf.Rad2Deg;
+                float turn = Mathf.DeltaAngle(transform.eulerAngles.y, desiredYaw);
+                if (Mathf.Abs(turn) > 3f)
+                {
+                    float turned = 0f;
+                    yield return TurnRoutine(turn, result => turned = result);
+                    if (turned < 1f)
+                    {
+                        done(new MoveResult(true, moved));
+                        yield break;
+                    }
+
+                    continue;
+                }
+
+                float requestedSegment = Mathf.Min(RouteSegmentLength, delta.magnitude);
+                float probeDistance = requestedSegment + PathSafetyMargin;
+                float clearance = GetTravelClearance(transform.forward, probeDistance);
+                float safeSegment = Mathf.Min(requestedSegment, clearance - PathSafetyMargin);
+                if (safeSegment < 0.025f)
+                {
+                    done(new MoveResult(true, moved));
+                    yield break;
+                }
+
+                MoveResult segmentResult = null;
+                yield return MoveStraightRoutine(safeSegment, result => segmentResult = result);
+                if (segmentResult == null)
+                {
+                    done(new MoveResult(true, moved));
+                    yield break;
+                }
+
+                moved += segmentResult.Moved;
+                if (segmentResult.Collided)
+                {
+                    done(new MoveResult(true, moved));
+                    yield break;
+                }
+            }
+
+            done(new MoveResult(true, moved));
+        }
+
+        private IEnumerator MoveStraightRoutine(float signedDistance, Action<MoveResult> done)
         {
             float remaining = Mathf.Abs(signedDistance);
             float direction = Mathf.Sign(signedDistance);
@@ -515,13 +610,15 @@ namespace RobotEngine.Robot
         }
 
         /// <summary>Tests whether the robot capsule can occupy a floor position.</summary>
-        public bool IsPositionClear(Vector2 position)
+        public bool IsPositionClear(Vector2 position, float safetyMargin = 0f)
         {
-            Vector3 center = new Vector3(position.x, CastCenterHeight, position.y);
+            float margin = Mathf.Max(0f, safetyMargin);
+            float radius = CastRadius + margin;
+            Vector3 center = new Vector3(position.x, CastCenterHeight + margin, position.y);
             float halfHeight = Mathf.Max(CastHeight * 0.5f - CastRadius, 0.01f);
             Vector3 bottom = center - transform.up * halfHeight;
             Vector3 top = center + transform.up * halfHeight;
-            Collider[] overlaps = Physics.OverlapCapsule(bottom, top, CastRadius,
+            Collider[] overlaps = Physics.OverlapCapsule(bottom, top, radius,
                 Physics.DefaultRaycastLayers, QueryTriggerInteraction.Ignore);
             for (int i = 0; i < overlaps.Length; i++)
             {
