@@ -28,9 +28,6 @@ namespace RobotEngine.Views
         private RenderTexture minimapTexture;
         private ViewMode mode = ViewMode.FirstPerson;
         private float blend;
-        private float orbitYaw;
-        private float orbitPitch = 22f;
-        private bool draggingOrbit;
 
         public ViewMode Mode
         {
@@ -68,7 +65,6 @@ namespace RobotEngine.Views
         {
             robot = robotTransform;
             agentCamera = agent;
-            orbitYaw = robotTransform.eulerAngles.y;
             MinimapEnabled = true;
 
             GameObject displayObject = new GameObject("DisplayCamera");
@@ -121,30 +117,6 @@ namespace RobotEngine.Views
             return new Vector2((apiPose.x + 5.6f) / 11.2f, 1f - (apiPose.y + 5.6f) / 11.2f);
         }
 
-        private void Update()
-        {
-            if (mode != ViewMode.ThirdPerson)
-            {
-                draggingOrbit = false;
-                return;
-            }
-
-            if (Input.GetMouseButtonDown(0))
-            {
-                draggingOrbit = true;
-            }
-            if (Input.GetMouseButtonUp(0))
-            {
-                draggingOrbit = false;
-            }
-            if (draggingOrbit && Input.GetMouseButton(0))
-            {
-                Vector2 delta = new Vector2(Input.GetAxis("Mouse X"), Input.GetAxis("Mouse Y"));
-                orbitYaw += delta.x * 4f;
-                orbitPitch = Mathf.Clamp(orbitPitch - delta.y * 3f, 8f, 65f);
-            }
-        }
-
         private void LateUpdate()
         {
             float target = mode == ViewMode.ThirdPerson ? 1f : 0f;
@@ -155,13 +127,12 @@ namespace RobotEngine.Views
             Quaternion fppRotation;
             agentCamera.GetDisplayPose(out fppPosition, out fppRotation);
 
-            Vector3 orbitTarget = robot.position + Vector3.up * 0.45f;
-            Quaternion orbitRotation = Quaternion.Euler(orbitPitch, orbitYaw, 0f);
-            Vector3 tppPosition = orbitTarget + orbitRotation * (Vector3.back * 2.7f);
-            // Keep the orbit camera inside the room (never inside a wall).
+            Vector3 tppPosition = robot.position - robot.forward * 2.2f + Vector3.up * 1.6f;
+            // Keep the chase camera inside the room (never inside a wall).
             tppPosition.x = Mathf.Clamp(tppPosition.x, -4.55f, 4.55f);
             tppPosition.z = Mathf.Clamp(tppPosition.z, -4.55f, 4.55f);
-            Quaternion tppRotation = Quaternion.LookRotation(orbitTarget - tppPosition, Vector3.up);
+            Quaternion tppRotation = Quaternion.LookRotation(
+                (robot.position + robot.forward * 0.6f + Vector3.up * 0.3f) - tppPosition, Vector3.up);
 
             displayCamera.transform.position = Vector3.Lerp(fppPosition, tppPosition, eased);
             displayCamera.transform.rotation = Quaternion.Slerp(fppRotation, tppRotation, eased);

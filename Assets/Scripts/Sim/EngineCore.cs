@@ -162,8 +162,7 @@ namespace RobotEngine.Sim
         /// One engine operation for the internal brain, with exactly the semantics of the
         /// matching HTTP endpoint (state machine, retries, trail, recording).
         /// </summary>
-        public IEnumerator ExecuteOp(string tool, float value, Action<Dictionary<string, object>> done,
-            Transform pickupTarget = null)
+        public IEnumerator ExecuteOp(string tool, float value, Action<Dictionary<string, object>> done)
         {
             Dictionary<string, object> result = new Dictionary<string, object>();
             switch (tool)
@@ -209,7 +208,7 @@ namespace RobotEngine.Sim
                 }
                 case "pickup":
                 {
-                    bool success = robot.TryPickup(pickupTarget);
+                    bool success = robot.TryPickup();
                     if (success)
                     {
                         engineState = "PickUp";
@@ -288,12 +287,9 @@ namespace RobotEngine.Sim
                     State = outcome,
                     Tool = "run_summary",
                     Args = "{}",
-                    Result = ApiJson.Obj(
-                        ApiJson.Str("outcome", outcome),
-                        ApiJson.Str("message", brain != null ? brain.ResultMessage : "")),
+                    Result = "{\"outcome\":\"" + outcome + "\"}",
                     Collided = false,
-                    Note = brain != null && !string.IsNullOrEmpty(brain.ResultMessage)
-                        ? brain.ResultMessage : "internal brain finished",
+                    Note = "internal brain finished",
                     Retries = retries,
                     Outcome = outcome,
                     X = finalPose.x,
@@ -892,7 +888,6 @@ namespace RobotEngine.Sim
                 ApiJson.Int("step", brain != null ? brain.Step : 0),
                 ApiJson.Str("tool", brain != null ? brain.LastTool : ""),
                 ApiJson.Str("outcome", brain != null ? brain.Outcome : ""),
-                ApiJson.Str("message", brain != null ? brain.ResultMessage : ""),
                 ApiJson.Str("voice", voiceText),
                 ApiJson.Bool("auto_run_voice", AutoRunVoice)));
         }

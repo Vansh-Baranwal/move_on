@@ -156,11 +156,6 @@ namespace RobotEngine.Sim
                     engine.StopBrain();
                 }
             }
-            else if (engine.Brain != null && !string.IsNullOrEmpty(engine.Brain.ResultMessage))
-            {
-                GUI.Label(new Rect(16f, 102f, PanelWidth + 44f, 22f),
-                    "RESULT: " + engine.Brain.ResultMessage);
-            }
         }
 
         private void DrawCommandBox()

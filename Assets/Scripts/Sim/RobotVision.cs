@@ -137,7 +137,7 @@ namespace RobotEngine.Sim
                     float aspect = bw / (float)Mathf.Max(1, bh);
                     string shape = fill >= 0.68f && aspect >= 0.8f && aspect <= 1.25f
                         ? "round"
-                        : (aspect >= 2f || fill < 0.58f ? "tapered" : "boxy");
+                        : (aspect >= 2f || fill < 0.45f ? "tapered" : "boxy");
 
                     blobs.Add(new Blob
                     {
