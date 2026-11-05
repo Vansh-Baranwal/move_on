@@ -324,6 +324,10 @@ namespace RobotEngine.Sim
             int next = Mathf.RoundToInt(GUI.HorizontalSlider(
                 new Rect(area.x + 14f, area.y + 30f, area.width - 28f, 22f),
                 engine.ReplayIndex, 0, engine.Logs.Count - 1));
+            while (next > 0 && engine.Logs[next].Tool == "run_summary")
+            {
+                next--;  // summary entries carry no physical pose to scrub to
+            }
             if (next != engine.ReplayIndex && engine.SetReplay(next))
             {
                 selectedEntry = next;

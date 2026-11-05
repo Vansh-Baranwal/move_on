@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Globalization;
 using System.Linq;
 using UnityEngine;
 using RobotEngine.Sim;
@@ -160,13 +161,56 @@ namespace RobotEngine.Robot
                     return;
                 }
 
-                await importer.InstantiateMainSceneAsync(transform);
+                // Instantiate into a holder so any model can be normalized to the
+                // engine's robot footprint (collider: 0.5 m wide, 0.7 m tall).
+                GameObject holder = new GameObject("CustomModel");
+                holder.transform.SetParent(transform, false);
+                await importer.InstantiateMainSceneAsync(holder.transform);
+
+                Bounds bounds = new Bounds(holder.transform.position, Vector3.zero);
+                bool hasRenderer = false;
+                foreach (Renderer renderer in holder.GetComponentsInChildren<Renderer>())
+                {
+                    if (!hasRenderer)
+                    {
+                        bounds = renderer.bounds;
+                        hasRenderer = true;
+                    }
+                    else
+                    {
+                        bounds.Encapsulate(renderer.bounds);
+                    }
+                }
+
+                if (!hasRenderer || bounds.size.y <= 0.0001f)
+                {
+                    Debug.LogWarning("robot.glb has no visible geometry; keeping the procedural robot");
+                    Destroy(holder);
+                    return;
+                }
+
+                // Uniform scale to 0.7 m tall, capped so it never exceeds the collider width.
+                float scale = Mathf.Min(0.7f / bounds.size.y, 0.55f / Mathf.Max(bounds.size.x, bounds.size.z));
+                scale = Mathf.Clamp(scale, 0.0001f, 1000f);
+                holder.transform.localScale = Vector3.one * scale;
+
+                // Base on the floor, horizontally centred on the robot root.
+                Vector3 rootPosition = transform.position;
+                Vector3 center = bounds.center;
+                Vector3 min = bounds.min;
+                holder.transform.localPosition = new Vector3(
+                    -(center.x - rootPosition.x) * scale,
+                    -min.y * scale,
+                    -(center.z - rootPosition.z) * scale);
+
                 if (visualsGroup != null)
                 {
                     visualsGroup.SetActive(false);
                 }
 
-                Debug.Log("Custom robot model loaded from " + path);
+                Debug.Log("Custom robot model loaded from " + path + " (native " +
+                    bounds.size.y.ToString("F2", CultureInfo.InvariantCulture) + " m tall, scaled x" +
+                    scale.ToString("F4", CultureInfo.InvariantCulture) + ")");
             }
             catch (Exception ex)
             {
@@ -327,6 +371,13 @@ namespace RobotEngine.Robot
 
             yield return new WaitForSeconds(0.6f);
 
+            // Settle upright: keep yaw only and rest exactly on the floor, so the
+            // physics tumble can never freeze a tipped-over object.
+            Vector3 settled = dropped.position;
+            dropped.rotation = Quaternion.Euler(0f, dropped.eulerAngles.y, 0f);
+            Collider settleCollider = dropped.GetComponent<Collider>();
+            float restHeight = settleCollider != null ? settleCollider.bounds.extents.y : 0.15f;
+            dropped.position = new Vector3(settled.x, restHeight + 0.005f, settled.z);
             if (body != null)
             {
                 body.isKinematic = true;

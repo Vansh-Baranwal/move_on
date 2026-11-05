@@ -56,6 +56,11 @@ namespace RobotEngine.Views
             get { return displayCamera; }
         }
 
+        public Camera MinimapCamera
+        {
+            get { return minimapCamera; }
+        }
+
         public void Build(Transform robotTransform, AgentCamera agent)
         {
             robot = robotTransform;
@@ -85,6 +90,8 @@ namespace RobotEngine.Views
             minimapCamera.backgroundColor = new Color(0.13f, 0.13f, 0.15f);
             minimapCamera.cullingMask = ~0;
             minimapCamera.targetTexture = minimapTexture;
+            // Rendered manually every frame - never relies on the auto-render loop.
+            minimapCamera.enabled = false;
         }
 
         public void ToggleView()
@@ -130,7 +137,10 @@ namespace RobotEngine.Views
             displayCamera.transform.rotation = Quaternion.Slerp(fppRotation, tppRotation, eased);
             displayCamera.fieldOfView = Mathf.Lerp(FppFieldOfView, TppFieldOfView, eased);
 
-            minimapCamera.enabled = MinimapEnabled;
+            if (MinimapEnabled)
+            {
+                minimapCamera.Render();
+            }
         }
     }
 }

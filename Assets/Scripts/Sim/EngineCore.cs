@@ -277,6 +277,8 @@ namespace RobotEngine.Sim
                     ApiJson.Int("frames", frames),
                     ApiJson.Num("seconds", seconds),
                     ApiJson.Bool("too_long", seconds > 20f)) + "\n");
+                Vector2 finalPose = CoordinateConverter.UnityToApiPosition(robot.transform.position);
+                float finalHeading = CoordinateConverter.UnityYawToApiHeading(robot.transform.eulerAngles.y);
                 AddLogEntry(new LogEntry
                 {
                     Step = brain != null ? brain.Step : 0,
@@ -288,10 +290,10 @@ namespace RobotEngine.Sim
                     Note = "internal brain finished",
                     Retries = retries,
                     Outcome = outcome,
-                    X = 0f,
-                    Y = 0f,
-                    Heading = 0f,
-                    Holding = false,
+                    X = finalPose.x,
+                    Y = finalPose.y,
+                    Heading = finalHeading,
+                    Holding = robot.HeldObject != null,
                     Timestamp = DateTime.UtcNow.ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture),
                 });
             }));
@@ -914,6 +916,25 @@ namespace RobotEngine.Sim
         private void HandleView(ApiRequest request)
         {
             string query = request.Query ?? "";
+            if (query.Contains("minimap=1") && viewRig != null && viewRig.MinimapTexture != null)
+            {
+                // Debug: dump the minimap camera state + texture.
+                Camera mini = viewRig.MinimapCamera;
+                string debug = ApiJson.Obj(
+                    ApiJson.Str("pos", mini.transform.position.ToString()),
+                    ApiJson.Str("rot", mini.transform.rotation.eulerAngles.ToString()),
+                    ApiJson.Num("ortho", mini.orthographicSize),
+                    ApiJson.Bool("enabled", mini.enabled),
+                    ApiJson.Bool("orthographic", mini.orthographic));
+                byte[] png = EncodeTexture(viewRig.MinimapTexture);
+                request.ResponseStatus = 200;
+                request.ResponseContentType = "image/png";
+                request.ResponseData = png;
+                request.Done.Set();
+                Debug.Log("[minimap debug] " + debug);
+                return;
+            }
+
             bool modeRequested = false;
             if (query.Contains("mode=tpp"))
             {
@@ -951,6 +972,19 @@ namespace RobotEngine.Sim
             request.ResponseContentType = "image/jpeg";
             request.ResponseData = jpeg;
             request.Done.Set();
+        }
+
+        private static byte[] EncodeTexture(RenderTexture texture)
+        {
+            RenderTexture previous = RenderTexture.active;
+            RenderTexture.active = texture;
+            Texture2D frame = new Texture2D(texture.width, texture.height, TextureFormat.RGB24, false);
+            frame.ReadPixels(new Rect(0f, 0f, texture.width, texture.height), 0, 0);
+            frame.Apply();
+            byte[] data = frame.EncodeToPNG();
+            RenderTexture.active = previous;
+            UnityEngine.Object.Destroy(frame);
+            return data;
         }
 
         private void RespondBrain(ApiRequest request)

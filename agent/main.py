@@ -282,9 +282,14 @@ def main() -> int:
 
     logger.write({"event": "run_summary", "outcome": outcome, "reason": reason, "steps": steps,
                   "usage_totals": totals})
-    push_step(engine, {"step": steps, "state": outcome, "retries": 0, "x": 0, "y": 0,
-                       "heading": 0, "holding": False},
-              "run_summary", {}, {"outcome": outcome, "reason": reason}, None, reason)
+    try:
+        final_state = engine.state()
+    except EngineError:
+        final_state = {"step": steps, "state": outcome, "retries": 0, "x": 0, "y": 0,
+                       "heading": 0, "holding": False}
+    final_state.update({"step": steps, "state": outcome})
+    push_step(engine, final_state, "run_summary", {}, {"outcome": outcome, "reason": reason},
+              None, reason)
     print(f"Outcome: {outcome} ({reason}) after {steps} steps")
     if totals:
         print(f"Tokens: input {totals['input']} (cached read {totals['cache_read']}, "

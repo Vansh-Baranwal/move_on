@@ -28,7 +28,19 @@ namespace RobotEngine.Core
             running = true;
             listener = new HttpListener();
             listener.Prefixes.Add(Prefix);
-            listener.Start();
+            // A just-killed previous instance can hold the port briefly; retry the bind.
+            for (int attempt = 0; ; attempt++)
+            {
+                try
+                {
+                    listener.Start();
+                    break;
+                }
+                catch (HttpListenerException) when (attempt < 30)
+                {
+                    Thread.Sleep(1000);
+                }
+            }
             listenerThread = new Thread(ListenLoop) { IsBackground = true };
             listenerThread.Start();
             Debug.Log("Robot engine API listening on " + Prefix);
